@@ -1,0 +1,11 @@
+{
+  "name": "sensortower-scripts",
+  "version": "1.0.0",
+  "description": "Scripts for Sensor Tower and Google Play crawling",
+  "scripts": {
+    "crawl-google-play": "node scripts/crawl_google_play.js"
+  },
+  "dependencies": {
+    "playwright": "^1.58.1"
+  }
+}

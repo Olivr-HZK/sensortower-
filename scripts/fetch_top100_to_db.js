@@ -1,0 +1,474 @@
+#!/usr/bin/env node
+/**
+ * 从 2025-12-29（周一，可自行修改 START_DATE）到今天，
+ * 每个周一抓取 iOS / Android Puzzle 品类在指定国家的 Top100 榜单，
+ * 写入本地 SQLite 数据库：sensortower_top100.db
+ *
+ * - iOS:  category = 7012, chart_type ∈ { topfreeapplications, topgrossingapplications }
+ * - Android: category = game_puzzle, chart_type ∈ { topselling_free, topgrossing }
+ * - 国家：US, JP, GB, DE, IN
+ *
+ * 依赖：
+ * - Node 内置模块（fs/path/https/child_process），无需 npm 安装额外包
+ * - 系统需安装 sqlite3 命令行工具（macOS 默认自带）
+ *
+ * 运行：
+ *   1. 在项目根目录配置 .env，包含：SENSORTOWER_API_TOKEN=你的token
+ *   2. node fetch_top100_to_db.js
+ *        → 从 START_DATE 到今天的每个周一都抓取
+ *   node fetch_top100_to_db.js 2026-02-02
+ *        → 只抓取指定「本周一」及「上周一」两天（用于工作流指定周）
+ */
+
+const fs = require('fs');
+const path = require('path');
+const https = require('https');
+const { execSync } = require('child_process');
+
+// 榜单接口：与中国区脚本一致
+const BASE_URL = 'https://api.sensortower-china.com/v1';
+// 应用名称接口：与 market_monitor_v1.6.js 一致，使用国际 API（/category/category_history）
+const BASE_URL_NAMES = 'https://api.sensortower.com/v1';
+
+// 国家、品类、榜单配置，参考 market_monitor_v1.6.js
+const COUNTRIES = ['US', 'JP', 'GB', 'DE', 'IN'];
+
+const CATEGORY_IOS = '7012';
+const CHART_TYPES_IOS = ['topfreeapplications', 'topgrossingapplications'];
+
+const CATEGORY_ANDROID = 'game_puzzle';
+const CHART_TYPES_ANDROID = ['topselling_free', 'topgrossing'];
+
+const DB_FILE = process.env.SENSORTOWER_DB_FILE ? (require('path').isAbsolute(process.env.SENSORTOWER_DB_FILE) ? process.env.SENSORTOWER_DB_FILE : path.join(__dirname, process.env.SENSORTOWER_DB_FILE)) : path.join(__dirname, 'sensortower_top100.db');
+
+// 批量获取应用名称时每批数量（与原脚本一致）
+const APP_NAMES_BATCH_SIZE = 30;
+const DELAY_MS = 400;
+
+// 起始日期：你说的 12.29，这里默认 2025-12-29，可按需改成其它年份
+const START_DATE = new Date('2025-12-29');
+
+// 与原脚本一致：国家/榜单展示名（符号+中文）
+const COUNTRY_DISPLAY = { US: '🇺🇸 美国', JP: '🇯🇵 日本', GB: '🇬🇧 英国', DE: '🇩🇪 德国', IN: '🇮🇳 印度' };
+const CHART_TYPE_DISPLAY = {
+  topfreeapplications: '免费榜',
+  topgrossingapplications: '畅销榜',
+  topselling_free: '免费榜',
+  topgrossing: '畅销榜',
+};
+
+function loadEnvToken() {
+  const envPath = path.join(__dirname, '.env');
+  if (!fs.existsSync(envPath)) {
+    console.error('请在项目根目录创建 .env，并配置 SENSORTOWER_API_TOKEN');
+    process.exit(1);
+  }
+  const content = fs.readFileSync(envPath, 'utf8');
+  for (const line of content.split('\n')) {
+    const m = line.match(/^\s*SENSORTOWER_API_TOKEN\s*=\s*(.+)\s*$/);
+    if (m) {
+      return m[1].trim().replace(/^["']|["']$/g, '');
+    }
+  }
+  console.error('.env 中未找到 SENSORTOWER_API_TOKEN');
+  process.exit(1);
+}
+
+function formatDate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function getMondayDates(startDate, endDate) {
+  // 假设 startDate 本身就是周一，则每次 +7 天即可
+  const dates = [];
+  let cur = new Date(startDate);
+  while (cur <= endDate) {
+    dates.push(new Date(cur));
+    cur.setDate(cur.getDate() + 7);
+  }
+  return dates;
+}
+
+/** 指定本周一时，返回 [上周一, 本周一] 两个 Date，用于只抓指定周 */
+function getTwoMondaysForWeek(mondayYmd) {
+  const d = new Date(mondayYmd + 'T12:00:00Z');
+  if (isNaN(d.getTime())) return null;
+  const last = new Date(d);
+  last.setUTCDate(last.getUTCDate() - 7);
+  return [last, new Date(d)];
+}
+
+function buildQuery(params) {
+  return Object.entries(params)
+    .filter(([, v]) => v != null && v !== '')
+    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+    .join('&');
+}
+
+function fetchJson(url) {
+  return new Promise((resolve, reject) => {
+    https
+      .get(url, (res) => {
+        let data = '';
+        res.on('data', (chunk) => (data += chunk));
+        res.on('end', () => {
+          if (res.statusCode !== 200) {
+            return reject(
+              new Error(`HTTP ${res.statusCode}: ${data.slice(0, 200)}`)
+            );
+          }
+          try {
+            resolve(JSON.parse(data));
+          } catch (e) {
+            reject(new Error('JSON 解析失败: ' + e.message));
+          }
+        });
+      })
+      .on('error', reject);
+  });
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * 批量根据 app_id 获取应用名称（与 market_monitor_v1.6.js 中 fetchAppNames 一致）
+ * 调用 /v1/{platform}/category/category_history，解析 name 或 humanized_app_name
+ * @param {string[]} appIds - 去重后的 app_id 列表
+ * @param {'ios'|'android'} platform
+ * @param {string} authToken
+ * @returns {Promise<Object.<string,string>>} appId -> appName
+ */
+/** 从数据库 app_name_cache 表读取 app_id -> app_name，只返回 appIds 中有的 */
+function loadNameMapFromCache(platform, appIds) {
+  const want = new Set(appIds.filter(Boolean));
+  if (want.size === 0) return {};
+  const plat = platform === 'ios' ? 'ios' : 'android';
+  const out = runSqlReturn(
+    `SELECT app_id, app_name FROM app_name_cache WHERE platform = '${plat}'`
+  );
+  const nameMap = {};
+  for (const line of (out || '').trim().split('\n')) {
+    if (!line) continue;
+    const idx = line.indexOf('|');
+    if (idx === -1) continue;
+    const appId = line.slice(0, idx).trim();
+    const appName = line.slice(idx + 1).trim();
+    if (want.has(appId)) nameMap[appId] = appName || appId;
+  }
+  return nameMap;
+}
+
+/** 将 API 拉到的 nameMap 写入 app_name_cache */
+function saveNameMapToCache(platform, nameMap) {
+  if (!nameMap || Object.keys(nameMap).length === 0) return;
+  const plat = platform === 'ios' ? 'ios' : 'android';
+  const values = Object.entries(nameMap)
+    .map(([appId, appName]) => `('${escapeSqlValue(appId)}','${escapeSqlValue(appName)}','${plat}')`)
+    .join(',');
+  runSql(
+    `INSERT OR REPLACE INTO app_name_cache (app_id, app_name, platform) VALUES ${values}`,
+    true
+  );
+}
+
+/**
+ * 先查缓存，缺失或“名=id”（当时没拉到真名）的再调 API，并把新结果写入缓存
+ */
+async function getAppNames(appIds, platform, authToken) {
+  const seen = new Set();
+  const uniqueIds = appIds.filter((id) => id && !seen.has(id) && (seen.add(id), true));
+  if (uniqueIds.length === 0) return {};
+
+  let nameMap = loadNameMapFromCache(platform, uniqueIds);
+  // 缓存里没有、或名字为空、或名字等于 app_id（说明从未拉到真名）的都要重新请求 API
+  const missingIds = uniqueIds.filter(
+    (id) => !nameMap[id] || String(nameMap[id]).trim() === '' || nameMap[id] === id
+  );
+  if (missingIds.length > 0) {
+    console.log(`  [${platform}] 需拉取应用名 ${missingIds.length} 个（走 /category/category_history）`);
+    const apiMap = await fetchAppNames(missingIds, platform, authToken);
+    Object.assign(nameMap, apiMap);
+    if (Object.keys(apiMap).length > 0) saveNameMapToCache(platform, apiMap);
+  }
+  return nameMap;
+}
+
+/**
+ * 调用 /category/category_history 拉取应用名（与 market_monitor_v1.6.js 中 fetchAppNames 一致）
+ * 使用国际 API BASE_URL_NAMES，返回结构：{ appId: { US: { category: { chartType: { name, humanized_app_name } } } } }
+ */
+async function fetchAppNames(appIds, platform, authToken) {
+  const nameMap = {};
+  if (!appIds || appIds.length === 0) return nameMap;
+
+  const category = platform === 'ios' ? CATEGORY_IOS : CATEGORY_ANDROID;
+  const chartType = platform === 'ios' ? 'topfreeapplications' : 'topselling_free';
+
+  for (let i = 0; i < appIds.length; i += APP_NAMES_BATCH_SIZE) {
+    const batch = appIds.slice(i, i + APP_NAMES_BATCH_SIZE);
+    const batchIds = batch.join(',');
+    const params = {
+      app_ids: batchIds,
+      category,
+      chart_type_ids: chartType,
+      countries: 'US',
+      auth_token: authToken,
+    };
+    const url = `${BASE_URL_NAMES}/${platform}/category/category_history?${buildQuery(params)}`;
+    try {
+      let data = await fetchJson(url);
+      if (data && data.data && typeof data.data === 'object') data = data.data;
+      for (const appId of Object.keys(data || {})) {
+        if (appId === 'lines') continue;
+        const appData = data[appId];
+        if (appData && appData.US) {
+          const catData = appData.US[category];
+          if (catData && catData[chartType]) {
+            const name = catData[chartType].name || catData[chartType].humanized_app_name || appId;
+            nameMap[appId] = name;
+          }
+        }
+      }
+    } catch (e) {
+      console.error('  获取应用名称失败:', e.message);
+    }
+    if (i + APP_NAMES_BATCH_SIZE < appIds.length) await sleep(DELAY_MS);
+  }
+  return nameMap;
+}
+
+async function callRanking(platform, category, chartType, country, dateStr, authToken) {
+  const params = {
+    category,
+    chart_type: chartType,
+    country,
+    date: dateStr,
+    auth_token: authToken,
+  };
+  const url = `${BASE_URL}/${platform}/ranking?${buildQuery(params)}`;
+  console.log('  请求:', url.replace(authToken, '***'));
+  const data = await fetchJson(url);
+  const ranking = (data && data.ranking) || [];
+  return ranking.slice(0, 100).map(String);
+}
+
+// ---- SQLite 相关（通过 sqlite3 CLI，避免 npm 依赖）----
+
+function assertSqlite3Exists() {
+  try {
+    execSync('sqlite3 -version', { stdio: 'ignore' });
+  } catch (e) {
+    console.error('未检测到 sqlite3 命令，请先在系统中安装 sqlite3 再运行本脚本。');
+    process.exit(1);
+  }
+}
+
+function runSql(sql, silent) {
+  const compact = sql
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join(' ');
+  const cmd = `sqlite3 "${DB_FILE}" "${compact.replace(/"/g, '""')}"`;
+  return execSync(cmd, {
+    encoding: 'utf8',
+    stdio: silent ? 'pipe' : 'inherit',
+  });
+}
+
+/** 执行 SQL 并返回标准输出（用于 SELECT），用 | 分隔列避免 app_name 中含逗号 */
+function runSqlReturn(sql) {
+  const compact = sql
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join(' ');
+  const safe = compact.replace(/"/g, '""');
+  const cmd = `sqlite3 -separator '|' "${DB_FILE}" "${safe}"`;
+  try {
+    return execSync(cmd, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }) || '';
+  } catch (e) {
+    return '';
+  }
+}
+
+function initDb() {
+  const ddl = `
+    PRAGMA journal_mode=WAL;
+    CREATE TABLE IF NOT EXISTS apple_top100 (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      rank_date TEXT NOT NULL,
+      country TEXT NOT NULL,
+      chart_type TEXT NOT NULL,
+      rank INTEGER NOT NULL,
+      app_id TEXT NOT NULL,
+      app_name TEXT DEFAULT '',
+      created_at TEXT DEFAULT (datetime('now')),
+      UNIQUE (rank_date, country, chart_type, rank)
+    );
+    CREATE TABLE IF NOT EXISTS android_top100 (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      rank_date TEXT NOT NULL,
+      country TEXT NOT NULL,
+      chart_type TEXT NOT NULL,
+      rank INTEGER NOT NULL,
+      app_id TEXT NOT NULL,
+      app_name TEXT DEFAULT '',
+      created_at TEXT DEFAULT (datetime('now')),
+      UNIQUE (rank_date, country, chart_type, rank)
+    );
+  `;
+  runSql(ddl);
+  // 若数据库已存在（无 app_name 列），则追加列
+  try {
+    runSql("ALTER TABLE apple_top100 ADD COLUMN app_name TEXT DEFAULT ''");
+  } catch (e) {
+    // 列已存在则忽略
+  }
+  try {
+    runSql("ALTER TABLE android_top100 ADD COLUMN app_name TEXT DEFAULT ''");
+  } catch (e) {}
+  // app_name 缓存表：拉名时优先读此表，相同 app_id 直接走缓存
+  runSql(`
+    CREATE TABLE IF NOT EXISTS app_name_cache (
+      app_id TEXT NOT NULL,
+      app_name TEXT NOT NULL,
+      platform TEXT NOT NULL,
+      PRIMARY KEY (app_id, platform)
+    );
+  `);
+  try {
+    runSql("ALTER TABLE apple_top100 ADD COLUMN country_display TEXT;");
+    runSql("ALTER TABLE apple_top100 ADD COLUMN chart_type_display TEXT;");
+  } catch (e) {}
+  try {
+    runSql("ALTER TABLE android_top100 ADD COLUMN country_display TEXT;");
+    runSql("ALTER TABLE android_top100 ADD COLUMN chart_type_display TEXT;");
+  } catch (e) {}
+}
+
+function escapeSqlValue(v) {
+  return String(v).replace(/'/g, "''");
+}
+
+function insertRanking(table, rankDate, country, chartType, appIds, nameMap) {
+  if (!appIds || appIds.length === 0) return;
+  const dateStr = formatDate(rankDate);
+  nameMap = nameMap || {};
+  const countryDisplay = escapeSqlValue(COUNTRY_DISPLAY[country] || country);
+  const chartTypeDisplay = escapeSqlValue(CHART_TYPE_DISPLAY[chartType] || chartType);
+  const values = appIds
+    .map((appId, idx) => {
+      const rank = idx + 1;
+      const appName = nameMap[appId] != null ? nameMap[appId] : appId;
+      return `('${escapeSqlValue(dateStr)}','${escapeSqlValue(country)}','${escapeSqlValue(chartType)}',${rank},'${escapeSqlValue(appId)}','${escapeSqlValue(appName)}','${countryDisplay}','${chartTypeDisplay}')`;
+    })
+    .join(',');
+  const sql = `
+    BEGIN;
+    INSERT OR IGNORE INTO ${table}
+      (rank_date, country, chart_type, rank, app_id, app_name, country_display, chart_type_display)
+    VALUES ${values};
+    COMMIT;
+  `;
+  runSql(sql);
+}
+
+async function main() {
+  const authToken = loadEnvToken();
+  assertSqlite3Exists();
+  initDb();
+
+  let mondayDates;
+  const dateArg = process.argv[2];
+  if (dateArg && /^\d{4}-\d{2}-\d{2}$/.test(dateArg.trim())) {
+    const pair = getTwoMondaysForWeek(dateArg.trim());
+    if (!pair) {
+      console.error('无效的周一日期，格式 YYYY-MM-DD');
+      process.exit(1);
+    }
+    mondayDates = pair;
+    console.log('指定周模式，只处理：', mondayDates.map((d) => formatDate(d)).join(', '));
+  } else {
+    const today = new Date();
+    mondayDates = getMondayDates(START_DATE, today);
+    console.log(
+      '将处理周一日期：',
+      mondayDates.map((d) => formatDate(d)).join(', ')
+    );
+  }
+
+  for (const d of mondayDates) {
+    const dateStr = formatDate(d);
+    console.log(`\n===== 处理日期 ${dateStr} =====`);
+
+    // iOS：先拉齐当日所有榜单，再一次性按 app_id 拉取应用名，再写入
+    const iosResults = [];
+    let allIosIds = [];
+    for (const country of COUNTRIES) {
+      for (const chartType of CHART_TYPES_IOS) {
+        console.log(`[iOS] ${country} ${chartType} ${dateStr}`);
+        try {
+          const ranking = await callRanking(
+            'ios',
+            CATEGORY_IOS,
+            chartType,
+            country,
+            dateStr,
+            authToken
+          );
+          iosResults.push({ country, chartType, ranking });
+          allIosIds = allIosIds.concat(ranking);
+        } catch (e) {
+          console.error('  -> 请求失败：', e.message);
+        }
+      }
+    }
+    const iosNameMap = await getAppNames([...new Set(allIosIds)], 'ios', authToken);
+    console.log(`[iOS] 应用名拉取完成，共 ${Object.keys(iosNameMap).length} 个`);
+    for (const { country, chartType, ranking } of iosResults) {
+      insertRanking('apple_top100', d, country, chartType, ranking, iosNameMap);
+    }
+
+    // Android：同上
+    const androidResults = [];
+    let allAndroidIds = [];
+    for (const country of COUNTRIES) {
+      for (const chartType of CHART_TYPES_ANDROID) {
+        console.log(`[Android] ${country} ${chartType} ${dateStr}`);
+        try {
+          const ranking = await callRanking(
+            'android',
+            CATEGORY_ANDROID,
+            chartType,
+            country,
+            dateStr,
+            authToken
+          );
+          androidResults.push({ country, chartType, ranking });
+          allAndroidIds = allAndroidIds.concat(ranking);
+        } catch (e) {
+          console.error('  -> 请求失败：', e.message);
+        }
+      }
+    }
+    const androidNameMap = await getAppNames([...new Set(allAndroidIds)], 'android', authToken);
+    console.log(`[Android] 应用名拉取完成，共 ${Object.keys(androidNameMap).length} 个`);
+    for (const { country, chartType, ranking } of androidResults) {
+      insertRanking('android_top100', d, country, chartType, ranking, androidNameMap);
+    }
+  }
+
+  console.log('\n全部完成，数据已写入 sqlite 数据库：', DB_FILE);
+}
+
+main().catch((err) => {
+  console.error('执行失败：', err.message);
+  process.exit(1);
+});
+
