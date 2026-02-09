@@ -19,8 +19,8 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 
-const DB_FILE = process.env.SENSORTOWER_DB_FILE ? (require('path').isAbsolute(process.env.SENSORTOWER_DB_FILE) ? process.env.SENSORTOWER_DB_FILE : path.join(__dirname, process.env.SENSORTOWER_DB_FILE)) : path.join(__dirname, 'sensortower_top100.db');
-const OUT_CSV = path.join(__dirname, '榜单异动.csv');
+const DB_FILE = process.env.SENSORTOWER_DB_FILE ? (require('path').isAbsolute(process.env.SENSORTOWER_DB_FILE) ? process.env.SENSORTOWER_DB_FILE : path.join(__dirname, '..', process.env.SENSORTOWER_DB_FILE)) : path.join(__dirname, '..', 'data', 'sensortower_top100.db');
+const OUT_CSV = path.join(__dirname, '..', 'output', '榜单异动.csv');
 
 const COUNTRIES = ['US', 'JP', 'GB', 'DE', 'IN'];
 const COUNTRY_DISPLAY = { US: '🇺🇸 美国', JP: '🇯🇵 日本', GB: '🇬🇧 英国', DE: '🇩🇪 德国', IN: '🇮🇳 印度' };
@@ -302,8 +302,22 @@ function main() {
   }
   console.log('已写入表:', tableName, '共', allChanges.length, '条');
 
+  // 准备 CSV 数据，确保字段名匹配
+  const csvRows = allChanges.map(r => ({
+    '信号': r.signal,
+    '应用名称': r.appName,
+    'App ID': r.appId,
+    '国家': r.country,
+    '平台': r.platform,
+    '本周排名': r.currentRank,
+    '上周排名': r.lastWeekRank,
+    '变化': r.change,
+    '异动类型': r.changeType,
+    '开发者/公司': r['开发者/公司'] || r.publisher_name || '',
+    '商店链接': r['商店链接'] || r.store_url || ''
+  }));
   const headers = ['信号', '应用名称', 'App ID', '国家', '平台', '本周排名', '上周排名', '变化', '异动类型', '开发者/公司', '商店链接'];
-  writeCsv(OUT_CSV, allChanges, headers);
+  writeCsv(OUT_CSV, csvRows, headers);
   console.log('已写入:', OUT_CSV);
 }
 

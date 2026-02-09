@@ -32,7 +32,7 @@ const CONFIG = {
 
 // 从 .env 读取 API Token
 function loadEnv() {
-  const envPath = path.join(__dirname, '.env');
+  const envPath = path.join(__dirname, '..', '.env');
   if (!fs.existsSync(envPath)) {
     console.error('请创建 .env 文件并配置 SENSORTOWER_API_TOKEN');
     process.exit(1);

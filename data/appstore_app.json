@@ -1,0 +1,46 @@
+{
+  "url": "https://apps.apple.com/us/app/screw-world-3d/id6757797893",
+  "crawledAt": "2026-02-06T03:36:47.757Z",
+  "app": {
+    "appId": "6757797893",
+    "appName": "Screw World 3D",
+    "subtitle": "screw puzzle game",
+    "price": "Free · In‑App Purchases · Designed for iPad",
+    "priceType": "Free",
+    "rating": 4.7,
+    "ratingCount": 14,
+    "ageRating": "4+",
+    "category": "Ages",
+    "categoryId": null,
+    "developer": "SayGames LTD",
+    "developerId": "1551847165",
+    "developerUrl": "https://apps.apple.com/us/developer/saygames-ltd/id1551847165",
+    "languages": [
+      "EN",
+      "+18 More"
+    ],
+    "size": "336 MB",
+    "sizeBytes": 352321536,
+    "iconUrl": "https://is1-ssl.mzstatic.com/image/thumb/PurpleSource211/v4/30/26/7b/30267bf7-0563-f13a-71bd-24b9b44e38d0/Placeholder.mill/400x400bb.webp",
+    "screenshotUrls": [
+      "https://is1-ssl.mzstatic.com/image/thumb/PurpleSource221/v4/41/db/b1/41dbb1aa-6cb5-8ab1-7806-675ac1b0aebd/apple_app_store_screenshots_iphone6.5_1242x2688_01.png/300x650bb.webp",
+      "https://is1-ssl.mzstatic.com/image/thumb/PurpleSource221/v4/41/db/b1/41dbb1aa-6cb5-8ab1-7806-675ac1b0aebd/apple_app_store_screenshots_iphone6.5_1242x2688_01.png/300x650bb-60.jpg",
+      "https://is1-ssl.mzstatic.com/image/thumb/PurpleSource211/v4/13/71/74/137174c8-d8fd-3055-1009-b6bf73493488/apple_app_store_screenshots_iphone6.5_1242x2688_02.png/300x650bb.webp",
+      "https://is1-ssl.mzstatic.com/image/thumb/PurpleSource211/v4/13/71/74/137174c8-d8fd-3055-1009-b6bf73493488/apple_app_store_screenshots_iphone6.5_1242x2688_02.png/300x650bb-60.jpg",
+      "https://is1-ssl.mzstatic.com/image/thumb/PurpleSource221/v4/4f/c5/43/4fc54363-691b-4f7b-de2a-2bb0b5ad8436/apple_app_store_screenshots_iphone6.5_1242x2688_03.png/300x650bb.webp",
+      "https://is1-ssl.mzstatic.com/image/thumb/PurpleSource221/v4/4f/c5/43/4fc54363-691b-4f7b-de2a-2bb0b5ad8436/apple_app_store_screenshots_iphone6.5_1242x2688_03.png/300x650bb-60.jpg",
+      "https://is1-ssl.mzstatic.com/image/thumb/PurpleSource221/v4/d3/c9/bd/d3c9bdae-e798-6d3c-8c78-3e9335fff8c9/apple_app_store_screenshots_iphone6.5_1242x2688_04.png/300x650bb.webp",
+      "https://is1-ssl.mzstatic.com/image/thumb/PurpleSource221/v4/d3/c9/bd/d3c9bdae-e798-6d3c-8c78-3e9335fff8c9/apple_app_store_screenshots_iphone6.5_1242x2688_04.png/300x650bb-60.jpg",
+      "https://is1-ssl.mzstatic.com/image/thumb/PurpleSource211/v4/5a/ac/c4/5aacc49e-6dec-95b4-b0b8-dd3ac6371c83/apple_app_store_screenshots_iphone6.5_1242x2688_05.png/300x650bb.webp",
+      "https://is1-ssl.mzstatic.com/image/thumb/PurpleSource211/v4/5a/ac/c4/5aacc49e-6dec-95b4-b0b8-dd3ac6371c83/apple_app_store_screenshots_iphone6.5_1242x2688_05.png/300x650bb-60.jpg"
+    ],
+    "description": "Download Screw World now and become the ultimate screw master in this colorful 3D puzzle universe! \",\"image\":\"https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/3e/09/c3/3e09c3cb-db3b-cd8e-3624-3bb2430d2d85/AppIcon-0-0-1x_U007emarketing-0-8-0-85-220.png/1200x630wa.png\",\"availableOnDevice\":\"iPhone, iPad, iPod\",\"operatingSystem\":\"Requires iOS 15.0 or later. Compatible with iPhone, iPad, and iPod touch.\",\"offers\":{\"@type\":\"Offer\",\"price\":0,\"priceCurrency\":\"USD\",\"category\":\"free\"},\"applicationCategory\":\"Games\",\"aggregateRating\":{\"@type\":\"AggregateRating\",\"ratingValue\":4.7,\"reviewCount\":14},\"author\":{\"@type\":\"Organization\",\"name\":\"SayGames LTD\",\"url\":\"https://apps.apple.com/us/developer/saygames-ltd/id1551847165\"}}",
+    "descriptionShort": "Download Screw World now and become the ultimate screw master in this colorful 3D puzzle universe! \",\"image\":\"https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/3e/09/c3/3e09c3cb-db3b-cd8e-3624-3bb...",
+    "releaseNotes": null,
+    "version": null,
+    "lastUpdated": null,
+    "compatibility": "iPad",
+    "inAppPurchases": true,
+    "storeUrl": "https://apps.apple.com/us/app/screw-world-3d/id6757797893"
+  }
+}

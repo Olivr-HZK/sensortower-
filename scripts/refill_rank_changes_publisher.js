@@ -11,7 +11,7 @@
 const path = require('path');
 const { execSync } = require('child_process');
 
-const DB_FILE = process.env.SENSORTOWER_DB_FILE ? (require('path').isAbsolute(process.env.SENSORTOWER_DB_FILE) ? process.env.SENSORTOWER_DB_FILE : path.join(__dirname, process.env.SENSORTOWER_DB_FILE)) : path.join(__dirname, 'sensortower_top100.db');
+const DB_FILE = process.env.SENSORTOWER_DB_FILE ? (require('path').isAbsolute(process.env.SENSORTOWER_DB_FILE) ? process.env.SENSORTOWER_DB_FILE : path.join(__dirname, '..', process.env.SENSORTOWER_DB_FILE)) : path.join(__dirname, '..', 'data', 'sensortower_top100.db');
 
 function runSql(sql, silent) {
   const compact = sql.split('\n').map((s) => s.trim()).filter(Boolean).join(' ');

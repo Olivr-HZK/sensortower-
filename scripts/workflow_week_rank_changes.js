@@ -23,8 +23,8 @@ const path = require('path');
 const { execSync } = require('child_process');
 const fs = require('fs');
 
-const ROOT = __dirname;
-const DB_FILE = path.join(ROOT, 'sensortower_top100.db');
+const ROOT = path.join(__dirname, '..');
+const DB_FILE = path.join(ROOT, 'data', 'sensortower_top100.db');
 
 function run(name, cmd, dbFile) {
   console.log('\n' + '='.repeat(60));
@@ -33,7 +33,7 @@ function run(name, cmd, dbFile) {
   const env = Object.assign({}, process.env);
   if (dbFile) env.SENSORTOWER_DB_FILE = dbFile;
   execSync(cmd, {
-    cwd: ROOT,
+    cwd: path.join(ROOT, 'scripts'),
     stdio: 'inherit',
     shell: true,
     env,
@@ -51,7 +51,7 @@ function main() {
   const dbArg = process.argv[3];
   const dbFile = dbArg
     ? (path.isAbsolute(dbArg) ? dbArg : path.join(ROOT, dbArg))
-    : path.join(ROOT, 'sensortower_top100.db');
+    : path.join(ROOT, 'data', 'sensortower_top100.db');
 
   if (!fs.existsSync(path.join(ROOT, '.env'))) {
     console.error('请先在项目根目录配置 .env，包含 SENSORTOWER_API_TOKEN');

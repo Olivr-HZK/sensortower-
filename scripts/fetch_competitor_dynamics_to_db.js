@@ -173,7 +173,7 @@ const COMPETITORS = {
 // ----------------- 通用工具函数 -----------------
 
 function loadEnvToken() {
-  const envPath = path.join(__dirname, '.env');
+  const envPath = path.join(__dirname, '..', '.env');
   if (!fs.existsSync(envPath)) {
     console.error('请在项目根目录创建 .env，并配置 SENSORTOWER_API_TOKEN');
     process.exit(1);

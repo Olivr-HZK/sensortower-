@@ -3,7 +3,11 @@
   "version": "1.0.0",
   "description": "Scripts for Sensor Tower and Google Play crawling",
   "scripts": {
-    "crawl-google-play": "node scripts/crawl_google_play.js"
+    "crawl-google-play": "node scripts/crawl_google_play.js",
+    "fetch-top100": "node scripts/fetch_top100_to_db.js",
+    "generate-changes": "node scripts/generate_rank_changes_from_db.js",
+    "fetch-sales": "node scripts/fetch_rank_changes_sales.js",
+    "workflow-week": "node scripts/workflow_week_rank_changes.js"
   },
   "dependencies": {
     "playwright": "^1.58.1"

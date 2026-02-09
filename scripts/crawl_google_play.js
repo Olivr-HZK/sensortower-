@@ -15,6 +15,104 @@ const path = require('path');
 
 const DEFAULT_OUTPUT = 'google_play_app.json';
 
+function decodeHtmlEntities(text) {
+  if (!text || typeof text !== 'string') return text;
+  return text
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&#(\d+);/g, (_, num) => String.fromCharCode(parseInt(num, 10)));
+}
+
+function stripTags(text) {
+  if (!text || typeof text !== 'string') return text;
+  return decodeHtmlEntities(text.replace(/<[^>]*>/g, '')).trim();
+}
+
+function extractJsonLd(html) {
+  const blocks = [];
+  const re = /<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi;
+  let match;
+  while ((match = re.exec(html))) {
+    const raw = match[1].trim();
+    if (!raw) continue;
+    try {
+      blocks.push(JSON.parse(raw));
+    } catch (e) {
+      // 有些页面可能包含多个 JSON 对象，忽略解析失败的块
+    }
+  }
+  return blocks;
+}
+
+function parseJsonLd(blocks) {
+  if (!blocks || !blocks.length) return null;
+  const list = [];
+  for (const b of blocks) {
+    if (Array.isArray(b)) list.push(...b);
+    else list.push(b);
+  }
+  const app = list.find((item) => item && item['@type'] === 'SoftwareApplication') || list[0];
+  if (!app || typeof app !== 'object') return null;
+  const ratingValue = app.aggregateRating && app.aggregateRating.ratingValue ? parseFloat(app.aggregateRating.ratingValue) : null;
+  const price = Array.isArray(app.offers) && app.offers[0] ? app.offers[0].price : app.offers && app.offers.price;
+  const priceValue = price !== undefined && price !== null ? parseFloat(price) : null;
+  return {
+    title: app.name || null,
+    shortDescription: app.description || null,
+    storeUrl: app.url || null,
+    iconUrl: app.image || null,
+    contentRating: app.contentRating || null,
+    developer: app.author && app.author.name ? app.author.name : null,
+    rating: Number.isFinite(ratingValue) ? ratingValue : null,
+    category: app.applicationCategory || null,
+    priceValue,
+  };
+}
+
+function extractInstallsFromHtml(html) {
+  const re = /<div[^>]*class="ClM7O"[^>]*>([\s\S]*?)<\/div>\s*<div[^>]*class="g1rdde"[^>]*>([\s\S]*?)<\/div>/gi;
+  let match;
+  while ((match = re.exec(html))) {
+    const value = stripTags(match[1]);
+    const label = stripTags(match[2]).toLowerCase();
+    if (!value || !label) continue;
+    if (
+      label.includes('download') ||
+      label.includes('instal') ||
+      label.includes('install') ||
+      label.includes('descarga') ||
+      label.includes('下载') ||
+      label.includes('下载量')
+    ) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function extractVideoFromHtml(html) {
+  const match = html.match(/https:\/\/i\.ytimg\.com\/vi\/([^/]+)\/hqdefault\.jpg/);
+  if (!match) return { videoThumbnailUrl: null, videoId: null };
+  return { videoThumbnailUrl: match[0], videoId: match[1] };
+}
+
+function extractSimilarAppIdsFromHtml(html, packageId) {
+  const ids = new Set();
+  const re = /\/store\/apps\/details\?id=([A-Za-z0-9._-]+)/g;
+  let match;
+  while ((match = re.exec(html))) {
+    const id = match[1];
+    if (!id || id === packageId) continue;
+    if (id.startsWith('com.')) ids.add(id);
+  }
+  return [...ids].slice(0, 20);
+}
+
+function extractPlayImagesFromHtml(html) {
+  const urls = html.match(/https:\/\/play-lh\.googleusercontent\.com\/[A-Za-z0-9_=-]+/g);
+  return urls ? [...new Set(urls)] : [];
+}
+
 /**
  * 从 HTML 中提取 AF_initDataCallback 里 key 为 ds:4 的 data 数组（字符串），再 JSON 解析。
  */
@@ -77,6 +175,78 @@ function extractDs4Data(html) {
 }
 
 /**
+ * 提取页面中所有 AF_initDataCallback 的 data 数组
+ */
+function extractAllCallbackData(html) {
+  const results = [];
+  let pos = 0;
+  while (pos < html.length) {
+    const idx = html.indexOf('AF_initDataCallback({key:', pos);
+    if (idx === -1) break;
+    const keyMatch = html.substring(idx, idx + 80).match(/key:\s*'([^']+)'/);
+    const key = keyMatch ? keyMatch[1] : null;
+    const dataStart = html.indexOf('data:', idx);
+    if (dataStart === -1) {
+      pos = idx + 1;
+      continue;
+    }
+    const arrayStart = dataStart + 'data:'.length;
+    let i = arrayStart;
+    let depth = 0;
+    let inDouble = false;
+    let inSingle = false;
+    let escape = false;
+    let stringChar = null;
+    const len = html.length;
+    while (i < len) {
+      const c = html[i];
+      if (escape) {
+        escape = false;
+        i++;
+        continue;
+      }
+      if (inDouble || inSingle) {
+        if (c === '\\') escape = true;
+        else if (c === stringChar) inDouble = inSingle = false;
+        i++;
+        continue;
+      }
+      if (c === '"' || c === "'") {
+        stringChar = c;
+        if (c === '"') inDouble = true;
+        else inSingle = true;
+        i++;
+        continue;
+      }
+      if (c === '[') {
+        depth++;
+        i++;
+        continue;
+      }
+      if (c === ']') {
+        depth--;
+        if (depth === 0) {
+          const raw = html.substring(arrayStart, i + 1);
+          try {
+            const data = JSON.parse(raw);
+            results.push({ key, data });
+          } catch (e) {
+            // 忽略解析失败的块
+          }
+          pos = i + 1;
+          break;
+        }
+        i++;
+        continue;
+      }
+      i++;
+    }
+    pos = i + 1;
+  }
+  return results;
+}
+
+/**
  * 递归扁平化数组/对象，收集所有字符串与数字，保持顺序。
  */
 function flattenValues(arr, out = []) {
@@ -91,6 +261,28 @@ function flattenValues(arr, out = []) {
   }
   if (typeof arr === 'string' || typeof arr === 'number') out.push(arr);
   return out;
+}
+
+function chooseBestData(candidates, appId) {
+  let best = null;
+  let bestScore = -1;
+  for (const item of candidates) {
+    const data = item.data;
+    if (!data) continue;
+    const flat = flattenValues(data, []);
+    const strings = flat.filter((v) => typeof v === 'string');
+    let score = 0;
+    if (appId && strings.includes(appId)) score += 5;
+    if (strings.some((s) => s.includes('play-lh.googleusercontent.com'))) score += 2;
+    if (strings.some((s) => s.includes('/store/apps/details?id='))) score += 2;
+    if (strings.some((s) => /^\d\.\d$/.test(s))) score += 1;
+    if (strings.some((s) => /^[\d,]+\+?$/.test(s))) score += 1;
+    if (score > bestScore) {
+      bestScore = score;
+      best = data;
+    }
+  }
+  return best;
 }
 
 /**
@@ -119,7 +311,7 @@ function collectImageUrls(arr, out = { icon: null, screenshots: [] }) {
 /**
  * 从扁平化后的字符串列表中按规则识别各字段。
  */
-function parseFieldsFromFlat(values) {
+function parseFieldsFromFlat(values, appId) {
   const strings = values.filter((v) => typeof v === 'string');
   const result = {
     packageId: null,
@@ -151,7 +343,17 @@ function parseFieldsFromFlat(values) {
   const packageRegex = /^com\.[a-zA-Z0-9_.]+$/;
   const ratingRegex = /^\d\.\d$/;
   const installsRegex = /^[\d,]+\+?$|^[\d,]+[\s–-][\d,]+$/;
+  const titleBlacklist = /in-?game purchases|in-?app purchases|top free|top grossing|free|install|puzzle|action|arcade|casual|strategy|simulation|racing|sports|role playing|card|music|adventure/i;
+  const priceLike = /^[₹$€¥£]|per item|items?$/i;
   const similarPackages = new Set();
+  const appIdIndex = appId ? strings.indexOf(appId) : -1;
+
+  const isPriceLike = (t) => priceLike.test(t) || t.includes('per item') || t.includes('per month');
+  const isBadTitle = (t) => titleBlacklist.test(t) || isPriceLike(t);
+  const isCategory = (t) =>
+    /^(动作|冒险|休闲|卡牌|体育|策略|模拟|角色扮演|解谜|竞速|音乐|其他|Action|Arcade|Casual|Strategy|Simulation|Racing|Puzzle|Sports|Role Playing|Card|Music|Adventure|GAME_ACTION)$/i.test(
+      t
+    );
 
   for (let i = 0; i < strings.length; i++) {
     const s = strings[i];
@@ -197,15 +399,39 @@ function parseFieldsFromFlat(values) {
   }
 
   const longTexts = strings.filter((s) => typeof s === 'string' && s.length > 100 && !s.startsWith('http'));
-  const shortTexts = strings.filter((s) => typeof s === 'string' && s.length > 10 && s.length <= 100 && !s.startsWith('http') && !packageRegex.test(s.trim()));
+  const shortTexts = strings.filter(
+    (s) =>
+      typeof s === 'string' &&
+      s.length > 10 &&
+      s.length <= 100 &&
+      !s.startsWith('http') &&
+      !packageRegex.test(s.trim())
+  );
+
+  if (!result.title && appIdIndex >= 0) {
+    for (let i = appIdIndex + 1; i < strings.length && i < appIdIndex + 8; i++) {
+      const t = strings[i];
+      if (!t || typeof t !== 'string') continue;
+      if (t.length < 3 || t.length > 80) continue;
+      if (t.includes('/store/')) continue;
+      if (isBadTitle(t)) continue;
+      result.title = t;
+      break;
+    }
+  }
   if (shortTexts.length) {
-    const maybeTitle = shortTexts.find((t) => /^[A-Za-z0-9\s\-.:]+$/.test(t) && t.length <= 80);
+    const maybeTitle = shortTexts.find((t) => {
+      if (titleBlacklist.test(t)) return false;
+      if (priceLike.test(t)) return false;
+      if (t.includes('per item') || t.includes('per month')) return false;
+      return /^[A-Za-z0-9\s\-.:]+$/.test(t) && t.length <= 80;
+    });
     if (maybeTitle) result.title = maybeTitle;
   }
   const categoryCandidates = strings.filter((s) => typeof s === 'string' && s.length >= 2 && s.length <= 30 && !s.startsWith('http') && !packageRegex.test(s.trim()));
   for (const t of categoryCandidates) {
     if (t === result.title) continue;
-    if (t.match(/^(动作|冒险|休闲|卡牌|体育|策略|模拟|角色扮演|解谜|竞速|音乐|其他|Action|Arcade|Casual|Strategy|Simulation|Racing|Puzzle|Sports|Role Playing|Card|Music|Adventure|GAME_ACTION)$/i)) {
+    if (isCategory(t)) {
       result.category = t;
       break;
     }
@@ -228,8 +454,29 @@ function parseFieldsFromFlat(values) {
     }
   }
   result.contentRatingLabels = result.contentRatingLabels.slice(0, 10);
+  const storeUrlCandidates = strings.filter(
+    (s) => typeof s === 'string' && s.includes('/store/apps/details?id=')
+  );
+  if (!result.storeUrl && storeUrlCandidates.length) {
+    const prefer = storeUrlCandidates.find((s) => appId && s.includes(`id=${appId}`));
+    result.storeUrl = 'https://play.google.com' + (prefer || storeUrlCandidates[0]).split('&')[0];
+  }
+
+  if (!result.developer && appIdIndex >= 0) {
+    const urlIdx = strings.findIndex(
+      (s) => typeof s === 'string' && s.includes(`/store/apps/details?id=${appId}`)
+    );
+    if (urlIdx >= 0 && urlIdx + 1 < strings.length) {
+      const t = strings[urlIdx + 1];
+      if (t && typeof t === 'string' && !isPriceLike(t) && t.length >= 3 && t.length <= 80) {
+        result.developer = t;
+      }
+    }
+  }
+
   for (const t of strings) {
     if (typeof t !== 'string') continue;
+    if (priceLike.test(t) || t.includes('per item')) continue;
     if (t.length >= 5 && t.length <= 120 && !t.startsWith('http') && !packageRegex.test(t.trim())) {
       if (t.includes('Enterprises') || t.includes('Inc') || t.includes('Ltd') || t.includes('LLC') || t.includes('Games') || t.includes('Studio') || t.includes('.') && !t.includes('/')) {
         if (!result.developer) result.developer = t;
@@ -242,7 +489,9 @@ function parseFieldsFromFlat(values) {
     if (base64Like.test(t.trim())) continue;
     if (packageRegex.test(t.trim())) continue;
     if (t.startsWith('/store/') || t.includes('details?id=') || t.startsWith('yt:') || t.includes('<') || t.includes('>')) continue;
-    if (t.length >= 15 && t.length <= 120 && !t.startsWith('http') && !t.includes('\n') && t !== result.developer && t !== result.title && !t.includes('\\u003')) {
+    if (titleBlacklist.test(t) || priceLike.test(t)) continue;
+    if (t.includes('@')) continue;
+    if (t.length >= 20 && t.length <= 160 && !t.startsWith('http') && !t.includes('\n') && t !== result.developer && t !== result.title && !t.includes('\\u003')) {
       if (!result.shortDescription) result.shortDescription = t;
     }
   }
@@ -274,14 +523,64 @@ function parseFieldsFromFlat(values) {
 /**
  * 从完整 HTML 解析出应用信息（含 ds:4 图片 URL）。
  */
-function parseGooglePlayPage(html) {
-  const data = extractDs4Data(html);
-  if (!data) return { ok: false, error: '未找到 ds:4 数据', data: null };
-  const flat = flattenValues(data);
-  const fields = parseFieldsFromFlat(flat);
-  const images = collectImageUrls(data);
+function parseGooglePlayPage(html, appId) {
+  const jsonLdBlocks = extractJsonLd(html);
+  const jsonLd = parseJsonLd(jsonLdBlocks);
+  let data = extractDs4Data(html);
+  if (!data || (Array.isArray(data) && data.length === 0)) {
+    const all = extractAllCallbackData(html);
+    data = chooseBestData(all, appId);
+  }
+  if (!data && !jsonLd) return { ok: false, error: '未找到可解析的数据块', data: null };
+  const flat = data ? flattenValues(data) : [];
+  const fields = parseFieldsFromFlat(flat, appId);
+  const images = data ? collectImageUrls(data) : { icon: null, screenshots: [] };
   if (images.icon) fields.iconUrl = images.icon;
   if (images.screenshots.length) fields.screenshotUrls = [...new Set(images.screenshots)].slice(0, 30);
+
+  if (jsonLd) {
+    if (jsonLd.title) fields.title = jsonLd.title;
+    if (jsonLd.shortDescription) fields.shortDescription = jsonLd.shortDescription;
+    if (jsonLd.storeUrl) fields.storeUrl = jsonLd.storeUrl;
+    if (jsonLd.iconUrl) fields.iconUrl = jsonLd.iconUrl;
+    if (jsonLd.contentRating) fields.contentRating = jsonLd.contentRating;
+    if (jsonLd.developer) fields.developer = jsonLd.developer;
+    if (jsonLd.category) fields.category = jsonLd.category;
+    if (jsonLd.rating !== null) fields.rating = jsonLd.rating;
+    if (jsonLd.priceValue !== null && fields.priceType === null) {
+      fields.priceType = jsonLd.priceValue > 0 ? '购买' : '免费';
+    }
+    if (!fields.packageId && jsonLd.storeUrl) {
+      const match = jsonLd.storeUrl.match(/[?&]id=([A-Za-z0-9._-]+)/);
+      if (match) fields.packageId = match[1];
+    }
+  }
+
+  const installs = extractInstallsFromHtml(html);
+  if (installs) {
+    const preferInstalls =
+      !fields.installs ||
+      installs.length >= String(fields.installs).length ||
+      /[a-zA-Z+]|万|亿|mi|m|k/i.test(installs);
+    if (preferInstalls) fields.installs = installs;
+  }
+
+  if (!fields.videoThumbnailUrl || !fields.videoId) {
+    const video = extractVideoFromHtml(html);
+    if (!fields.videoThumbnailUrl && video.videoThumbnailUrl) fields.videoThumbnailUrl = video.videoThumbnailUrl;
+    if (!fields.videoId && video.videoId) fields.videoId = video.videoId;
+  }
+
+  if (!fields.similarAppIds || fields.similarAppIds.length === 0) {
+    fields.similarAppIds = extractSimilarAppIdsFromHtml(html, fields.packageId || appId);
+  }
+
+  if (!fields.screenshotUrls || fields.screenshotUrls.length === 0) {
+    const allImages = extractPlayImagesFromHtml(html);
+    const screenshots = allImages.filter((u) => u !== fields.iconUrl).slice(0, 30);
+    if (screenshots.length) fields.screenshotUrls = screenshots;
+  }
+
   return { ok: true, data: fields, rawFlatLength: flat.length };
 }
 
@@ -296,6 +595,7 @@ async function main() {
   const input = url.trim();
   let html;
   let normalizedUrl;
+  let appIdFromUrl = null;
   if (input.endsWith('.html') && fs.existsSync(path.resolve(input))) {
     normalizedUrl = 'file://' + path.resolve(input);
     console.log('从本地文件读取:', input);
@@ -306,6 +606,8 @@ async function main() {
       console.error('请提供 Google Play 应用详情链接、应用包名（如 com.wb.goog.mkx）或本地 .html 文件路径');
       process.exit(1);
     }
+    const idMatch = normalizedUrl.match(/[?&]id=([A-Za-z0-9._-]+)/);
+    if (idMatch) appIdFromUrl = idMatch[1];
     console.log('正在使用 Playwright 打开:', normalizedUrl);
     const { chromium } = require('playwright');
     const browser = await chromium.launch({ headless: true });
@@ -316,7 +618,11 @@ async function main() {
     await browser.close();
   }
   try {
-    const parsed = parseGooglePlayPage(html);
+    if (!appIdFromUrl) {
+      const htmlIdMatch = html.match(/details\?id=([A-Za-z0-9._-]+)/);
+      if (htmlIdMatch) appIdFromUrl = htmlIdMatch[1];
+    }
+    const parsed = parseGooglePlayPage(html, appIdFromUrl);
     if (!parsed.ok) {
       console.error(parsed.error);
       process.exit(1);

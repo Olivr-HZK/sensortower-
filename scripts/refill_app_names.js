@@ -21,7 +21,7 @@ const APP_NAMES_BATCH_SIZE = 30;
 const DELAY_MS = 400;
 
 function loadEnvToken() {
-  const envPath = path.join(__dirname, '.env');
+  const envPath = path.join(__dirname, '..', '.env');
   if (!fs.existsSync(envPath)) {
     console.error('请配置 .env 中的 SENSORTOWER_API_TOKEN');
     process.exit(1);

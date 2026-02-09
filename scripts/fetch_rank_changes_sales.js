@@ -18,7 +18,7 @@ const https = require('https');
 const { execSync } = require('child_process');
 
 const BASE_URL = 'https://api.sensortower-china.com/v1';
-const DB_FILE = process.env.SENSORTOWER_DB_FILE ? (require('path').isAbsolute(process.env.SENSORTOWER_DB_FILE) ? process.env.SENSORTOWER_DB_FILE : path.join(__dirname, process.env.SENSORTOWER_DB_FILE)) : path.join(__dirname, 'sensortower_top100.db');
+const DB_FILE = process.env.SENSORTOWER_DB_FILE ? (require('path').isAbsolute(process.env.SENSORTOWER_DB_FILE) ? process.env.SENSORTOWER_DB_FILE : path.join(__dirname, '..', process.env.SENSORTOWER_DB_FILE)) : path.join(__dirname, '..', 'data', 'sensortower_top100.db');
 const BATCH_SIZE = 100;
 const DELAY_MS = 400;
 
@@ -31,7 +31,7 @@ const COUNTRY_TO_DISPLAY = {
 };
 
 function loadEnvToken() {
-  const envPath = path.join(__dirname, '.env');
+  const envPath = path.join(__dirname, '..', '.env');
   if (!fs.existsSync(envPath)) {
     console.error('请配置 .env 中的 SENSORTOWER_API_TOKEN');
     process.exit(1);

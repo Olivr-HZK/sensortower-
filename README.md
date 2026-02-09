@@ -68,10 +68,38 @@ node scripts/crawl_google_play.js
 
 详细文档请查看 `docs/` 目录：
 
+- **[使用指南：获取每周 Top100 榜单和异动榜单](docs/USAGE_GUIDE.md)** ⭐ 推荐阅读
+- **[数据库定期同步（S3 预签名链接）](docs/DB_SYNC_S3.md)**
 - [快速开始指南](docs/QUICK_START.md)
 - [API 文档](docs/API_DOCUMENTATION.md)
 - [API 总结](docs/API_SUMMARY.md)
 - [工作流说明](docs/WORKFLOW_README.md)
+
+## 🎯 快速命令
+
+### 获取每周 Top100 榜单和异动榜单
+
+```bash
+# 推荐：使用完整工作流（一条命令完成所有步骤）
+npm run workflow-week 2026-02-02
+
+# 或者直接运行
+node scripts/workflow_week_rank_changes.js 2026-02-02
+```
+
+**其他常用命令**：
+```bash
+# 仅获取 Top100 榜单
+npm run fetch-top100 2026-02-02
+
+# 仅生成异动榜单
+npm run generate-changes 2026-02-02
+
+# 拉取异动应用的下载/收益数据
+npm run fetch-sales 2026-02-02
+```
+
+> 💡 **提示**：日期格式为 `YYYY-MM-DD`，必须是周一。详细说明请查看 [使用指南](docs/USAGE_GUIDE.md)。
 
 ## 🔧 开发
 

@@ -39,7 +39,7 @@ const CHART_TYPES_IOS = ['topfreeapplications', 'topgrossingapplications'];
 const CATEGORY_ANDROID = 'game_puzzle';
 const CHART_TYPES_ANDROID = ['topselling_free', 'topgrossing'];
 
-const DB_FILE = process.env.SENSORTOWER_DB_FILE ? (require('path').isAbsolute(process.env.SENSORTOWER_DB_FILE) ? process.env.SENSORTOWER_DB_FILE : path.join(__dirname, process.env.SENSORTOWER_DB_FILE)) : path.join(__dirname, 'sensortower_top100.db');
+const DB_FILE = process.env.SENSORTOWER_DB_FILE ? (require('path').isAbsolute(process.env.SENSORTOWER_DB_FILE) ? process.env.SENSORTOWER_DB_FILE : path.join(__dirname, '..', process.env.SENSORTOWER_DB_FILE)) : path.join(__dirname, '..', 'data', 'sensortower_top100.db');
 
 // 批量获取应用名称时每批数量（与原脚本一致）
 const APP_NAMES_BATCH_SIZE = 30;
@@ -58,7 +58,7 @@ const CHART_TYPE_DISPLAY = {
 };
 
 function loadEnvToken() {
-  const envPath = path.join(__dirname, '.env');
+  const envPath = path.join(__dirname, '..', '.env');
   if (!fs.existsSync(envPath)) {
     console.error('请在项目根目录创建 .env，并配置 SENSORTOWER_API_TOKEN');
     process.exit(1);
@@ -275,10 +275,18 @@ function runSql(sql, silent) {
     .filter(Boolean)
     .join(' ');
   const cmd = `sqlite3 "${DB_FILE}" "${compact.replace(/"/g, '""')}"`;
-  return execSync(cmd, {
-    encoding: 'utf8',
-    stdio: silent ? 'pipe' : 'inherit',
-  });
+  try {
+    return execSync(cmd, {
+      encoding: 'utf8',
+      stdio: silent ? 'pipe' : 'inherit',
+    });
+  } catch (e) {
+    // 如果是列已存在的错误，静默忽略
+    if (e.message && e.message.includes('duplicate column name')) {
+      return '';
+    }
+    throw e;
+  }
 }
 
 /** 执行 SQL 并返回标准输出（用于 SELECT），用 | 分隔列避免 app_name 中含逗号 */
@@ -324,15 +332,9 @@ function initDb() {
     );
   `;
   runSql(ddl);
-  // 若数据库已存在（无 app_name 列），则追加列
-  try {
-    runSql("ALTER TABLE apple_top100 ADD COLUMN app_name TEXT DEFAULT ''");
-  } catch (e) {
-    // 列已存在则忽略
-  }
-  try {
-    runSql("ALTER TABLE android_top100 ADD COLUMN app_name TEXT DEFAULT ''");
-  } catch (e) {}
+  // 若数据库已存在（无 app_name 列），则追加列（静默处理，列已存在则忽略）
+  runSql("ALTER TABLE apple_top100 ADD COLUMN app_name TEXT DEFAULT ''", true);
+  runSql("ALTER TABLE android_top100 ADD COLUMN app_name TEXT DEFAULT ''", true);
   // app_name 缓存表：拉名时优先读此表，相同 app_id 直接走缓存
   runSql(`
     CREATE TABLE IF NOT EXISTS app_name_cache (
@@ -342,14 +344,11 @@ function initDb() {
       PRIMARY KEY (app_id, platform)
     );
   `);
-  try {
-    runSql("ALTER TABLE apple_top100 ADD COLUMN country_display TEXT;");
-    runSql("ALTER TABLE apple_top100 ADD COLUMN chart_type_display TEXT;");
-  } catch (e) {}
-  try {
-    runSql("ALTER TABLE android_top100 ADD COLUMN country_display TEXT;");
-    runSql("ALTER TABLE android_top100 ADD COLUMN chart_type_display TEXT;");
-  } catch (e) {}
+  // 添加显示名称列（静默处理，列已存在则忽略）
+  runSql("ALTER TABLE apple_top100 ADD COLUMN country_display TEXT;", true);
+  runSql("ALTER TABLE apple_top100 ADD COLUMN chart_type_display TEXT;", true);
+  runSql("ALTER TABLE android_top100 ADD COLUMN country_display TEXT;", true);
+  runSql("ALTER TABLE android_top100 ADD COLUMN chart_type_display TEXT;", true);
 }
 
 function escapeSqlValue(v) {
