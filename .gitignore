@@ -1,12 +1,12 @@
 # 依赖
 node_modules/
 package-lock.json
-
+.playwright-browser/
 # 环境变量
 .env
 
 # 数据库文件
-*.db
+data/*.db
 *.db-shm
 *.db-wal
 
