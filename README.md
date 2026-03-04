@@ -1,129 +1,149 @@
-# SensorTower 数据爬取与分析工具
+# SensorTower 周报数据工作流
 
-这是一个用于爬取和分析 SensorTower 数据的 Node.js 项目，包含 Google Play 应用信息爬取、排行榜数据获取、竞品动态监控等功能。
+基于 SensorTower API 与本地 SQLite 的**休闲游戏（Casual）Top100 周报流水线**：抓取榜单、异动、元数据、下载/收益、商店信息，并支持 AI 生成前五异动描述与下架检测。
 
-## 📁 项目结构
+---
 
-```
-sensortower/
-├── scripts/          # 所有脚本文件
-│   ├── crawl_google_play.js          # Google Play 爬虫
-│   ├── fetch_top100_to_db.js         # Top 100 数据获取
-│   ├── fetch_app_metadata_to_db.js  # 应用元数据获取
-│   └── ...
-├── docs/            # 文档文件
-│   ├── API_DOCUMENTATION.md         # API 文档
-│   ├── QUICK_START.md               # 快速开始指南
-│   └── ...
-├── data/            # 数据文件（数据库、JSON 等）
-├── config/          # 配置文件
-│   ├── .env.example                 # 环境变量示例
-│   └── category.json                # 分类配置
-├── tests/           # 测试文件
-├── output/          # 输出文件（CSV 等）
-└── package.json     # 项目配置
-```
+## 环境要求
 
-## 🚀 快速开始
+- **Node.js**（主运行环境）
+- **sqlite3** 命令行（系统自带或 `brew install sqlite3`）
+- **Playwright**（仅商店页爬取步骤需要）：`npx playwright install chromium`
+- **Python 3**（可选）：用于 S3 同步、导出等脚本时需安装 `requirements.txt` 依赖
+
+---
+
+## 快速开始
 
 ### 1. 安装依赖
 
 ```bash
 npm install
+# 若需跑商店页爬取
+npx playwright install chromium
 ```
 
 ### 2. 配置环境变量
 
-复制 `config/.env.example` 为 `.env` 并填写你的配置：
+在项目根目录创建 `.env`（勿提交到 Git），例如：
 
 ```bash
-cp config/.env.example .env
+# 必填：SensorTower API
+SENSORTOWER_API_TOKEN=你的token
+
+# 可选：数据库路径（默认 data/sensortower_top100.db）
+# SENSORTOWER_DB_FILE=data/sensortower_top100.db
+
+# 可选：AI 前五异动描述 / 综述（OpenRouter 中转）
+# OPENROUTER_API_KEY=sk-or-v1-...
+# OPENROUTER_MODEL=google/gemini-3-pro-preview
+# OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
 ```
 
-编辑 `.env` 文件，填入你的 SensorTower API Token：
+### 3. 跑完整周报工作流（推荐）
 
-```
-SENSORTOWER_API_TOKEN=your_api_token_here
-```
-
-### 3. 运行脚本
+传入「本周一」日期（YYYY-MM-DD），一次执行 7 步：Top100、异动、Metadata、应用名、下载/收益、Publisher、前五描述、Top5 综述。
 
 ```bash
-# 爬取 Google Play 应用信息
-npm run crawl-google-play
-
-# 或直接运行脚本
-node scripts/crawl_google_play.js
+node scripts/workflow_week_rank_changes.js 2026-03-02
+# 或
+npm run workflow-week 2026-03-02
 ```
 
-## 📚 主要功能
+### 4. 定时任务（每周一 10:30）
 
-- **Google Play 爬虫**：爬取应用详情、截图、评分等信息
-- **排行榜数据获取**：获取 Top 100 应用排行榜数据
-- **应用元数据管理**：获取和管理应用元数据
-- **竞品动态监控**：监控竞品应用的变化
-- **数据导出**：导出 CSV 格式的分析报告
+```bash
+bash scripts/setup_cron.sh
+```
 
-## 📖 文档
+会注册：`weekly_automated_workflow.js`（内部计算本周一 → 跑上述工作流 + US 免费榜商店信息爬取）。
 
-详细文档请查看 `docs/` 目录：
+---
 
-- **[使用指南：获取每周 Top100 榜单和异动榜单](docs/USAGE_GUIDE.md)** ⭐ 推荐阅读
-- **[数据库定期同步（S3 预签名链接）](docs/DB_SYNC_S3.md)**
-- [快速开始指南](docs/QUICK_START.md)
+## 项目结构
+
+```
+sensortower/
+├── scripts/                    # 主脚本（Node.js）
+│   ├── workflow_week_rank_changes.js   # 7 步周报工作流
+│   ├── weekly_automated_workflow.js    # 定时任务入口
+│   ├── fetch_top100_to_db.js          # Top100 榜单（Casual）
+│   ├── generate_rank_changes_from_db.js
+│   ├── fetch_app_metadata_to_db.js
+│   ├── update_app_names_from_metadata.js
+│   ├── fetch_top100_sales.js           # 下载/收益
+│   ├── refill_rank_changes_publisher.js
+│   ├── generate_weekly_top5_comments.js # 前五一句话描述
+│   ├── generate_top5_overview.js       # 前五异动综述
+│   ├── detect_removed_games.js         # 下架检测（写库）
+│   ├── test_us_free_removed.js         # 下架测试（仅 JSON）
+│   ├── weekly_us_free_top100_storeinfo.js
+│   ├── setup_cron.sh
+│   └── ...
+├── data/                       # SQLite 数据库（默认 sensortower_top100.db）
+├── output/                    # CSV、测试 JSON 等
+├── logs/                      # 工作流日志
+├── docs/                      # 详细文档
+├── .env                       # 本地配置（不提交）
+├── package.json
+└── requirements.txt           # Python 依赖（可选）
+```
+
+---
+
+## 工作流步骤概览（7 步）
+
+| 步骤 | 脚本 | 说明 |
+|------|------|------|
+| 1 | `fetch_top100_to_db.js` | 抓取上周日+本周日 iOS/Android **Casual** Top100，rank_date 存周一 |
+| 2 | `generate_rank_changes_from_db.js` | 生成异动表 + `榜单异动.csv` |
+| 3 | `fetch_app_metadata_to_db.js` | 拉取 app_metadata |
+| 3.5 | `update_app_names_from_metadata.js` | 用 metadata 更新 Top100 应用名 |
+| 4 | `fetch_top100_sales.js` | 上一周下载量/收益写入 Top100 与 rank_changes |
+| 5 | `refill_rank_changes_publisher.js` | 补全 publisher、store_url |
+| 6 | `generate_weekly_top5_comments.js` | 各榜单前五一句话异动（可选 OpenRouter） |
+| 7 | `generate_top5_overview.js` | 最近四周 Top5 异动综述（可选 OpenRouter） |
+
+- **榜单品类**：iOS `7003`（Casual），Android `game_casual`。  
+- **日期约定**：用户/定时任务只传「本周一」；榜单 API 用周日，库存周一；下载/收益为「上一周」周一～周日。
+
+---
+
+## 常用命令
+
+```bash
+# 仅抓指定周 Top100
+node scripts/fetch_top100_to_db.js 2026-03-02
+
+# 仅生成异动
+node scripts/generate_rank_changes_from_db.js
+
+# 仅跑下架检测（写 weekly_removed_games 表）
+node scripts/detect_removed_games.js 2026-03-02
+
+# 测试美国免费榜下架（不写库，输出 JSON）
+node scripts/test_us_free_removed.js
+```
+
+---
+
+## 文档
+
+- [周报工作流详解](docs/WEEKLY_WORKFLOW.md)
+- [自动化与定时任务](docs/AUTOMATED_WORKFLOW.md)
+- [使用指南（Top100 / 异动）](docs/USAGE_GUIDE.md)
+- [数据库表说明](docs/DATABASE_TABLES.md)
 - [API 文档](docs/API_DOCUMENTATION.md)
-- [API 总结](docs/API_SUMMARY.md)
-- [工作流说明](docs/WORKFLOW_README.md)
 
-## 🎯 快速命令
+---
 
-### 获取每周 Top100 榜单和异动榜单
+## 注意事项
 
-```bash
-# 推荐：使用完整工作流（一条命令完成所有步骤）
-npm run workflow-week 2026-02-02
+- `.env`、`data/*.db`、`logs/*.log`、`output/*.csv` 等已加入 `.gitignore`，不会提交。
+- 定时任务在 cron 下 PATH 较简，脚本内已用 `process.execPath` 与固定 PATH 前缀，若仍报 `node`/`sqlite3` 找不到，可在 crontab 中写清 node 绝对路径。
 
-# 或者直接运行
-node scripts/workflow_week_rank_changes.js 2026-02-02
-```
+---
 
-**其他常用命令**：
-```bash
-# 仅获取 Top100 榜单
-npm run fetch-top100 2026-02-02
+## 许可证
 
-# 仅生成异动榜单
-npm run generate-changes 2026-02-02
-
-# 拉取异动应用的下载/收益数据
-npm run fetch-sales 2026-02-02
-```
-
-> 💡 **提示**：日期格式为 `YYYY-MM-DD`，必须是周一。详细说明请查看 [使用指南](docs/USAGE_GUIDE.md)。
-
-## 🔧 开发
-
-### 项目依赖
-
-- Node.js
-- Playwright（用于网页爬取）
-
-### 脚本说明
-
-主要脚本位于 `scripts/` 目录：
-
-- `crawl_google_play.js` - Google Play 应用信息爬取
-- `fetch_top100_to_db.js` - 获取 Top 100 排行榜并存入数据库
-- `fetch_app_metadata_to_db.js` - 获取应用元数据
-- `fetch_competitor_dynamics_to_db.js` - 获取竞品动态数据
-- `workflow_week_rank_changes.js` - 周度排名变化工作流
-
-## 📝 注意事项
-
-- 数据库文件（`.db`）默认被 `.gitignore` 忽略，不会提交到版本控制
-- 环境变量文件（`.env`）包含敏感信息，请勿提交到版本控制
-- 输出文件（CSV）默认被忽略，如需版本控制请修改 `.gitignore`
-
-## 📄 许可证
-
-本项目仅供学习和研究使用。
+仅供学习与研究使用。

@@ -1,2 +1,7 @@
-boto3
-python-dotenv
+# Python 依赖（可选）
+# 主项目为 Node.js，仅以下脚本需要 Python 环境：
+#   - scripts/push_sensortower_db_to_s3.py
+#   - scripts/fetch_sensortower_db.py
+#   - scripts/export_to_bitable.py
+boto3>=1.26.0
+python-dotenv>=1.0.0
