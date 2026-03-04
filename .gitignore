@@ -2,8 +2,10 @@
 node_modules/
 package-lock.json
 .playwright-browser/
+.playwright-browsers/
 # 环境变量
 .env
+standalone-weekly-workflow-skill/.env
 
 # 数据库文件
 data/*.db
@@ -13,6 +15,8 @@ data/*.db
 # 日志文件
 *.log
 npm-debug.log*
+logs/*.log
+!logs/README.md
 
 # 操作系统文件
 .DS_Store
