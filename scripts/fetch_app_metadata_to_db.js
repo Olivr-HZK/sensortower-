@@ -24,10 +24,15 @@ function loadEnvToken() {
     console.error('请配置 .env 中的 SENSORTOWER_API_TOKEN');
     process.exit(1);
   }
-  const content = fs.readFileSync(envPath, 'utf8');
-  for (const line of content.split('\n')) {
-    const m = line.match(/^\s*SENSORTOWER_API_TOKEN\s*=\s*(.+)\s*$/);
-    if (m) return m[1].trim().replace(/^["']|["']$/g, '');
+  let content = fs.readFileSync(envPath, 'utf8');
+  content = content.replace(/^\uFEFF/, ''); // 去掉 BOM
+  for (const line of content.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const m = trimmed.match(/^SENSORTOWER_API_TOKEN\s*=\s*(.*)$/);
+    if (!m) continue;
+    let val = m[1].split('#')[0].trim().replace(/^["']|["']$/g, '');
+    if (val) return val;
   }
   console.error('.env 中未找到 SENSORTOWER_API_TOKEN');
   process.exit(1);
@@ -51,7 +56,11 @@ function fetchJson(url) {
             return reject(new Error(`HTTP ${res.statusCode}: ${data.slice(0, 300)}`));
           }
           try {
-            resolve(JSON.parse(data));
+            const parsed = JSON.parse(data);
+            if (parsed && parsed.error) {
+              return reject(new Error(String(parsed.error)));
+            }
+            resolve(parsed);
           } catch (e) {
             reject(new Error('JSON 解析失败: ' + e.message));
           }

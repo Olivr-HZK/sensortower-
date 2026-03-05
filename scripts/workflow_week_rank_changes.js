@@ -2,19 +2,25 @@
 /**
  * 指定周工作流：拉取该周榜单、生成异动、拉取 app metadata 与下载/收益，全部写入数据库。
  *
+ * 日期约定（周一→周日）：
+ *   - 入参为「本周一」；榜单 API 使用对应「周日」拉取，库中 rank_date 存周一。
+ *   - 下载/收益（Top100 & 异动）：start_date = 本周一-7（上周一），end_date = 本周一-1（上周日），即「上一周 Mon~Sun」。
+ *
  * 顺序：
- *   1. fetch_top100_to_db.js [本周一]  → 抓取本周一 + 上周一的 iOS/Android Top100，写入 apple_top100 / android_top100
- *   2. generate_rank_changes_from_db.js [本周一] → 比对生成榜单异动，写入 rank_changes + 榜单异动.csv
+ *   1. fetch_top100_to_db.js [本周一]  → API 拉取「上周日+本周日」榜单，rank_date 存上周一/本周一，写入 apple_top100 / android_top100
+ *   2. generate_rank_changes_from_db.js → 从库中最新两个周一比对生成异动，写入 rank_changes + 榜单异动.csv
  *   3. fetch_app_metadata_to_db.js     → 从 Top100 表取 app_id，拉取 metadata 写入 app_metadata
- *   4. fetch_rank_changes_sales.js [本周一] → 拉取异动应用的下载/收益，写回 rank_changes（end_date=本周一）
+ *   3.5. update_app_names_from_metadata.js → 从 app_metadata 更新 apple_top100 / android_top100 的 app_name
+ *   4. fetch_top100_sales.js [本周一] → 为 Top100 写入「上一周」下载/收益，并同步覆盖 rank_changes 的 downloads/revenue
  *   5. refill_rank_changes_publisher.js   → 为 rank_changes 补全 publisher_name、store_url
+ *   6. generate_weekly_top5_comments.js [本周一] → 为每个榜单前五生成一句话异动描述，写入 weekly_top5_comments
+ *   7. generate_top5_overview.js [本周一] → 汇总最近四周 Top5 趋势，生成「Top5 异动综述」写入 weekly_top5_overview
  *
  * 运行：
- *   node workflow_week_rank_changes.js 2026-02-02
- *        → 指定「本周一」为 2026-02-02，完整跑完上述 5 步（默认数据库 sensortower_top100.db）
- *   node workflow_week_rank_changes.js 2026-02-02 my.db
- *        → 使用 my.db 作为 SQLite 数据库文件（不存在则在步骤 1 中创建）
- *        → 指定「本周一」为 2026-02-02，完整跑完上述 5 步
+ *   node workflow_week_rank_changes.js 2026-02-09
+ *        → 指定「本周一」为 2026-02-09，完整跑完上述 6 步（默认数据库 sensortower_top100.db）
+ *   node workflow_week_rank_changes.js 2026-02-09 my.db
+ *        → 使用 my.db 作为数据库（不存在则在步骤 1 中创建）
  *
  * 依赖：.env 中配置 SENSORTOWER_API_TOKEN；系统有 sqlite3。
  */
@@ -26,11 +32,17 @@ const fs = require('fs');
 const ROOT = path.join(__dirname, '..');
 const DB_FILE = path.join(ROOT, 'data', 'sensortower_top100.db');
 
+// 与 cron 兼容：用 Node 可执行路径调子脚本，避免 cron 环境下 PATH 无 node 导致 command not found
+const NODE_PATH = process.execPath;
+// cron 下 PATH 极简，子进程需能找到 sqlite3 等；前置常见路径
+const CRON_FRIENDLY_PATH = ['/usr/local/bin', '/usr/bin', '/bin', '/opt/homebrew/bin', process.env.PATH].filter(Boolean).join(':');
+
 function run(name, cmd, dbFile) {
   console.log('\n' + '='.repeat(60));
   console.log('[工作流]', name);
   console.log('=', 60);
   const env = Object.assign({}, process.env);
+  env.PATH = CRON_FRIENDLY_PATH;
   if (dbFile) env.SENSORTOWER_DB_FILE = dbFile;
   execSync(cmd, {
     cwd: path.join(ROOT, 'scripts'),
@@ -59,36 +71,54 @@ function main() {
   }
 
   run(
-    '1/5 抓取指定周 Top100（本周一 + 上周一）',
-    `node fetch_top100_to_db.js ${m}`,
+    '1/7 抓取指定周 Top100（本周一 + 上周一）',
+    `"${NODE_PATH}" fetch_top100_to_db.js ${m}`,
     dbFile
   );
   run(
-    '2/5 生成榜单异动',
-    `node generate_rank_changes_from_db.js ${m}`,
+    '2/7 生成榜单异动',
+    `"${NODE_PATH}" generate_rank_changes_from_db.js`,
     dbFile
   );
   run(
-    '3/5 拉取 App Metadata（ios + android）',
-    'node fetch_app_metadata_to_db.js',
+    '3/7 拉取 App Metadata（ios + android）',
+    `"${NODE_PATH}" fetch_app_metadata_to_db.js`,
     dbFile
   );
   run(
-    '4/5 拉取异动应用的下载/收益',
-    `node fetch_rank_changes_sales.js ${m}`,
+    '3.5/7 从 App Metadata 更新应用名称',
+    `"${NODE_PATH}" update_app_names_from_metadata.js`,
     dbFile
   );
   run(
-    '5/5 补全异动表的开发者/公司、商店链接',
-    'node refill_rank_changes_publisher.js',
+    '4/7 为 Top100 & 异动补充上一周下载/收益',
+    `"${NODE_PATH}" fetch_top100_sales.js ${m}`,
+    dbFile
+  );
+  run(
+    '5/7 补全异动表的开发者/公司、商店链接',
+    `"${NODE_PATH}" refill_rank_changes_publisher.js`,
+    dbFile
+  );
+  run(
+    '6/7 生成 Top100 前五异动一句话描述',
+    `"${NODE_PATH}" generate_weekly_top5_comments.js ${m}`,
+    dbFile
+  );
+  run(
+    '7/7 生成 Top5 异动综述（最近四周趋势）',
+    `"${NODE_PATH}" generate_top5_overview.js ${m}`,
     dbFile
   );
 
   console.log('\n' + '='.repeat(60));
   console.log('指定周工作流全部完成。本周一:', m);
-  console.log('  - apple_top100 / android_top100：已写入指定两周数据');
+  console.log('  - apple_top100 / android_top100：已写入指定两周数据（应用名称已从 app_metadata 更新）');
   console.log('  - rank_changes：异动 + downloads/revenue + publisher_name + store_url');
+  console.log('  - weekly_top5_comments：各平台/国家/榜单前五的一句话异动描述');
+  console.log('  - weekly_top5_overview：Top5 异动综述（最近四周）');
   console.log('  - app_metadata：Top100 涉及的 app 已拉取');
+  console.log('  - app_name_cache：已从 app_metadata 更新');
   console.log('  - 榜单异动.csv：已更新');
   console.log('='.repeat(60));
 }

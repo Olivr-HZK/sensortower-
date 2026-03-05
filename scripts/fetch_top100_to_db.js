@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 /**
  * 从 2025-12-29（周一，可自行修改 START_DATE）到今天，
- * 每个周一抓取 iOS / Android Puzzle 品类在指定国家的 Top100 榜单，
+ * 每个周一抓取 iOS / Android Casual 品类在指定国家的 Top100 榜单，
  * 写入本地 SQLite 数据库：sensortower_top100.db
  *
- * - iOS:  category = 7012, chart_type ∈ { topfreeapplications, topgrossingapplications }
- * - Android: category = game_puzzle, chart_type ∈ { topselling_free, topgrossing }
+ * - iOS:  category = 7003, chart_type ∈ { topfreeapplications, topgrossingapplications }
+ * - Android: category = game_casual, chart_type ∈ { topselling_free, topgrossing }
  * - 国家：US, JP, GB, DE, IN
+ *
+ * 注意：
+ * - 不再获取应用名称（已优化，应用名称从 app_metadata 更新）
+ * - app_name 字段会先设置为 app_id，稍后通过 update_app_names_from_metadata.js 更新
  *
  * 依赖：
  * - Node 内置模块（fs/path/https/child_process），无需 npm 安装额外包
@@ -17,7 +21,7 @@
  *   2. node fetch_top100_to_db.js
  *        → 从 START_DATE 到今天的每个周一都抓取
  *   node fetch_top100_to_db.js 2026-02-02
- *        → 只抓取指定「本周一」及「上周一」两天（用于工作流指定周）
+ *        → 只抓取指定「本周一」及「上周一」对应周的周日榜单（API 用周日，库中 rank_date 存周一）
  */
 
 const fs = require('fs');
@@ -33,10 +37,10 @@ const BASE_URL_NAMES = 'https://api.sensortower.com/v1';
 // 国家、品类、榜单配置，参考 market_monitor_v1.6.js
 const COUNTRIES = ['US', 'JP', 'GB', 'DE', 'IN'];
 
-const CATEGORY_IOS = '7012';
+const CATEGORY_IOS = '7003';
 const CHART_TYPES_IOS = ['topfreeapplications', 'topgrossingapplications'];
 
-const CATEGORY_ANDROID = 'game_puzzle';
+const CATEGORY_ANDROID = 'game_casual';
 const CHART_TYPES_ANDROID = ['topselling_free', 'topgrossing'];
 
 const DB_FILE = process.env.SENSORTOWER_DB_FILE ? (require('path').isAbsolute(process.env.SENSORTOWER_DB_FILE) ? process.env.SENSORTOWER_DB_FILE : path.join(__dirname, '..', process.env.SENSORTOWER_DB_FILE)) : path.join(__dirname, '..', 'data', 'sensortower_top100.db');
@@ -101,6 +105,13 @@ function getTwoMondaysForWeek(mondayYmd) {
   return [last, new Date(d)];
 }
 
+/** 周一对应的「上周日」Date（用于 API 请求：拉取周日榜单，库中仍存 rank_date=周一） */
+function getSundayBeforeMonday(mondayDate) {
+  const sun = new Date(mondayDate);
+  sun.setUTCDate(sun.getUTCDate() - 1);
+  return sun;
+}
+
 function buildQuery(params) {
   return Object.entries(params)
     .filter(([, v]) => v != null && v !== '')
@@ -108,10 +119,15 @@ function buildQuery(params) {
     .join('&');
 }
 
-function fetchJson(url) {
+function fetchJson(url, retries = 3, timeout = 30000) {
   return new Promise((resolve, reject) => {
-    https
-      .get(url, (res) => {
+    const attemptFetch = (attempt) => {
+      const req = https.get(url, {
+        timeout: timeout,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+        }
+      }, (res) => {
         let data = '';
         res.on('data', (chunk) => (data += chunk));
         res.on('end', () => {
@@ -126,8 +142,29 @@ function fetchJson(url) {
             reject(new Error('JSON 解析失败: ' + e.message));
           }
         });
-      })
-      .on('error', reject);
+      });
+
+      req.on('timeout', () => {
+        req.destroy();
+        if (attempt < retries) {
+          console.log(`  请求超时，重试 ${attempt + 1}/${retries}...`);
+          setTimeout(() => attemptFetch(attempt + 1), 1000 * attempt);
+        } else {
+          reject(new Error(`连接超时（已重试 ${retries} 次）: ${url}`));
+        }
+      });
+
+      req.on('error', (e) => {
+        if (attempt < retries && (e.code === 'ETIMEDOUT' || e.code === 'ECONNRESET' || e.code === 'ENOTFOUND')) {
+          console.log(`  网络错误 ${e.code}，重试 ${attempt + 1}/${retries}...`);
+          setTimeout(() => attemptFetch(attempt + 1), 1000 * attempt);
+        } else {
+          reject(e);
+        }
+      });
+    };
+
+    attemptFetch(1);
   });
 }
 
@@ -221,7 +258,7 @@ async function fetchAppNames(appIds, platform, authToken) {
     };
     const url = `${BASE_URL_NAMES}/${platform}/category/category_history?${buildQuery(params)}`;
     try {
-      let data = await fetchJson(url);
+      let data = await fetchJson(url, 3, 30000); // 重试3次，超时30秒
       if (data && data.data && typeof data.data === 'object') data = data.data;
       for (const appId of Object.keys(data || {})) {
         if (appId === 'lines') continue;
@@ -235,7 +272,8 @@ async function fetchAppNames(appIds, platform, authToken) {
         }
       }
     } catch (e) {
-      console.error('  获取应用名称失败:', e.message);
+      console.error(`  获取应用名称失败 (批次 ${i + 1}-${i + batch.length}):`, e.message);
+      // 即使失败也继续处理下一批，避免中断整个流程
     }
     if (i + APP_NAMES_BATCH_SIZE < appIds.length) await sleep(DELAY_MS);
   }
@@ -364,6 +402,7 @@ function insertRanking(table, rankDate, country, chartType, appIds, nameMap) {
   const values = appIds
     .map((appId, idx) => {
       const rank = idx + 1;
+      // 应用名称优先使用 nameMap，否则使用 app_id（稍后从 app_metadata 更新）
       const appName = nameMap[appId] != null ? nameMap[appId] : appId;
       return `('${escapeSqlValue(dateStr)}','${escapeSqlValue(country)}','${escapeSqlValue(chartType)}',${rank},'${escapeSqlValue(appId)}','${escapeSqlValue(appName)}','${countryDisplay}','${chartTypeDisplay}')`;
     })
@@ -403,63 +442,58 @@ async function main() {
   }
 
   for (const d of mondayDates) {
-    const dateStr = formatDate(d);
-    console.log(`\n===== 处理日期 ${dateStr} =====`);
+    const rankDateMonday = d; // 库中存「周一」作为该周标识
+    const sundayForApi = getSundayBeforeMonday(d);
+    const apiDateStr = formatDate(sundayForApi);
+    const mondayStr = formatDate(d);
+    console.log(`\n===== 周 ${mondayStr}（API 拉取周日 ${apiDateStr} 榜单，rank_date 存周一） =====`);
 
-    // iOS：先拉齐当日所有榜单，再一次性按 app_id 拉取应用名，再写入
+    // iOS：拉取周日榜单并写入，rank_date 存周一
     const iosResults = [];
-    let allIosIds = [];
     for (const country of COUNTRIES) {
       for (const chartType of CHART_TYPES_IOS) {
-        console.log(`[iOS] ${country} ${chartType} ${dateStr}`);
+        console.log(`[iOS] ${country} ${chartType} ${apiDateStr}`);
         try {
           const ranking = await callRanking(
             'ios',
             CATEGORY_IOS,
             chartType,
             country,
-            dateStr,
+            apiDateStr,
             authToken
           );
           iosResults.push({ country, chartType, ranking });
-          allIosIds = allIosIds.concat(ranking);
         } catch (e) {
           console.error('  -> 请求失败：', e.message);
         }
       }
     }
-    const iosNameMap = await getAppNames([...new Set(allIosIds)], 'ios', authToken);
-    console.log(`[iOS] 应用名拉取完成，共 ${Object.keys(iosNameMap).length} 个`);
     for (const { country, chartType, ranking } of iosResults) {
-      insertRanking('apple_top100', d, country, chartType, ranking, iosNameMap);
+      insertRanking('apple_top100', rankDateMonday, country, chartType, ranking, {});
     }
 
-    // Android：同上
+    // Android：拉取周日榜单并写入，rank_date 存周一
     const androidResults = [];
-    let allAndroidIds = [];
     for (const country of COUNTRIES) {
       for (const chartType of CHART_TYPES_ANDROID) {
-        console.log(`[Android] ${country} ${chartType} ${dateStr}`);
+        console.log(`[Android] ${country} ${chartType} ${apiDateStr}`);
         try {
           const ranking = await callRanking(
             'android',
             CATEGORY_ANDROID,
             chartType,
             country,
-            dateStr,
+            apiDateStr,
             authToken
           );
           androidResults.push({ country, chartType, ranking });
-          allAndroidIds = allAndroidIds.concat(ranking);
         } catch (e) {
           console.error('  -> 请求失败：', e.message);
         }
       }
     }
-    const androidNameMap = await getAppNames([...new Set(allAndroidIds)], 'android', authToken);
-    console.log(`[Android] 应用名拉取完成，共 ${Object.keys(androidNameMap).length} 个`);
     for (const { country, chartType, ranking } of androidResults) {
-      insertRanking('android_top100', d, country, chartType, ranking, androidNameMap);
+      insertRanking('android_top100', rankDateMonday, country, chartType, ranking, {});
     }
   }
 

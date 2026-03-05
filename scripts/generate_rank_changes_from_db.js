@@ -130,6 +130,34 @@ function getRanking(table, rankDate, country, chartType, topN) {
   return rows;
 }
 
+/** 读取某平台当周 Top100 免费榜里的 downloads / revenue，映射到 (appId|countryDisplay) */
+function getSalesMapFromTop100(platform, rankDateCurrent) {
+  const map = new Map();
+  const isIos = platform.toLowerCase() === 'ios';
+  const table = isIos ? 'apple_top100' : 'android_top100';
+  const chartType = isIos ? 'topfreeapplications' : 'topselling_free';
+  const sql = `
+    SELECT app_id, country, downloads, revenue
+    FROM ${table}
+    WHERE rank_date = '${rankDateCurrent}' AND chart_type = '${chartType}'
+  `;
+  const raw = runSqlReturn(sql);
+  if (!raw) return map;
+  for (const line of raw.trim().split('\n')) {
+    if (!line) continue;
+    const parts = line.split('|');
+    if (parts.length < 4) continue;
+    const appId = parts[0].trim();
+    const countryCode = parts[1].trim();
+    const downloads = parts[2] === '' ? null : Number(parts[2]);
+    const revenue = parts[3] === '' ? null : Number(parts[3]);
+    const countryDisplay = COUNTRY_DISPLAY[countryCode] || countryCode;
+    const key = `${appId}|${countryDisplay}`;
+    map.set(key, { downloads, revenue });
+  }
+  return map;
+}
+
 function analyzeOne(platform, table, chartType, currentDate, lastDate) {
   const allChanges = [];
   for (const country of COUNTRIES) {
@@ -255,6 +283,21 @@ function main() {
   );
 
   const allChanges = [...iosChanges, ...androidChanges];
+
+  // 从 top100 继承 downloads / revenue（已由 fetch_top100_sales.js 写入 top100）
+  const iosSalesMap = getSalesMapFromTop100('ios', current);
+  const androidSalesMap = getSalesMapFromTop100('android', current);
+  for (const r of allChanges) {
+    const plat = (r.platform || '').toLowerCase();
+    const salesMap = plat === 'ios' ? iosSalesMap : plat === 'android' ? androidSalesMap : null;
+    if (!salesMap) continue;
+    const key = `${r.appId}|${r.country}`;
+    const s = salesMap.get(key);
+    if (s) {
+      r.downloads = s.downloads;
+      r.revenue = s.revenue;
+    }
+  }
   // 按信号排序：🔴 🟡 🟢
   const order = { '🔴': 0, '🟡': 1, '🟢': 2 };
   allChanges.sort((a, b) => (order[a.signal] ?? 3) - (order[b.signal] ?? 3));
@@ -276,6 +319,8 @@ function main() {
       change_type TEXT,
       publisher_name TEXT,
       store_url TEXT,
+      downloads REAL,
+      revenue REAL,
       created_at TEXT DEFAULT (datetime('now'))
     );
   `);
@@ -284,6 +329,12 @@ function main() {
   } catch (_) {}
   try {
     runSql('ALTER TABLE rank_changes ADD COLUMN store_url TEXT;');
+  } catch (_) {}
+  try {
+    runSql('ALTER TABLE rank_changes ADD COLUMN downloads REAL;');
+  } catch (_) {}
+  try {
+    runSql('ALTER TABLE rank_changes ADD COLUMN revenue REAL;');
   } catch (_) {}
   const metadataMap = getMetadataMap();
   runSql(`DELETE FROM rank_changes WHERE rank_date_current = ${escapeSqlValue(current)} AND rank_date_last = ${escapeSqlValue(last)};`);
@@ -296,8 +347,8 @@ function main() {
     r['开发者/公司'] = publisherName;
     r.store_url = storeUrl;
     r['商店链接'] = storeUrl;
-    const sql = `INSERT INTO rank_changes (rank_date_current, rank_date_last, signal, app_name, app_id, country, platform, current_rank, last_week_rank, change, change_type, publisher_name, store_url)
-      VALUES (${escapeSqlValue(current)}, ${escapeSqlValue(last)}, ${escapeSqlValue(r.signal)}, ${escapeSqlValue(r.appName)}, ${escapeSqlValue(r.appId)}, ${escapeSqlValue(r.country)}, ${escapeSqlValue(r.platform)}, ${r.currentRank}, ${escapeSqlValue(String(r.lastWeekRank))}, ${escapeSqlValue(r.change)}, ${escapeSqlValue(r.changeType)}, ${escapeSqlValue(publisherName)}, ${escapeSqlValue(storeUrl)});`;
+    const sql = `INSERT INTO rank_changes (rank_date_current, rank_date_last, signal, app_name, app_id, country, platform, current_rank, last_week_rank, change, change_type, publisher_name, store_url, downloads, revenue)
+      VALUES (${escapeSqlValue(current)}, ${escapeSqlValue(last)}, ${escapeSqlValue(r.signal)}, ${escapeSqlValue(r.appName)}, ${escapeSqlValue(r.appId)}, ${escapeSqlValue(r.country)}, ${escapeSqlValue(r.platform)}, ${r.currentRank}, ${escapeSqlValue(String(r.lastWeekRank))}, ${escapeSqlValue(r.change)}, ${escapeSqlValue(r.changeType)}, ${escapeSqlValue(publisherName)}, ${escapeSqlValue(storeUrl)}, ${escapeSqlValue(r.downloads == null ? '' : r.downloads)}, ${escapeSqlValue(r.revenue == null ? '' : r.revenue)});`;
     runSql(sql);
   }
   console.log('已写入表:', tableName, '共', allChanges.length, '条');

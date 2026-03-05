@@ -6,8 +6,8 @@
  * 运行：
  *   node fetch_rank_changes_sales.js
  *      → 使用表中已有的 rank_date_current（第一条）作为「本周一」
- *   node fetch_rank_changes_sales.js 2026-02-08
- *      → 传入日期为 end_date，start_date = end_date 前 7 天，拉取该区间下载/收益并写回 rank_changes
+ *   node fetch_rank_changes_sales.js 2026-02-09
+ *      → 传入「本周一」：end_date = 周一-1（周日），start_date = 周日-6（当周周一），拉取该周下载/收益并写回 rank_changes
  *
  * 每批请求 100 个 app_id。
  */
@@ -197,14 +197,15 @@ async function main() {
   let endDate = null;
 
   if (dateArg) {
-    const d = dateArg.trim();
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) {
-      console.error('日期格式须为 YYYY-MM-DD，例如 2026-02-08（作为 end_date）');
+    const mondayYmd = dateArg.trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(mondayYmd)) {
+      console.error('日期格式须为 YYYY-MM-DD，例如 2026-02-09（本周一）');
       process.exit(1);
     }
-    endDate = d;
-    startDate = dateAdd(d, -7);
-    rankDateCurrent = d;
+    // 传入「本周一」：API 用周日作为 end_date，当周周一作为 start_date（共 7 天）
+    rankDateCurrent = mondayYmd;
+    endDate = dateAdd(mondayYmd, -1);   // 周日
+    startDate = dateAdd(endDate, -6);   // 当周周一
   }
 
   const out = runSqlReturn(

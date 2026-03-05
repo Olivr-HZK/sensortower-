@@ -7,7 +7,10 @@
     "fetch-top100": "node scripts/fetch_top100_to_db.js",
     "generate-changes": "node scripts/generate_rank_changes_from_db.js",
     "fetch-sales": "node scripts/fetch_rank_changes_sales.js",
-    "workflow-week": "node scripts/workflow_week_rank_changes.js"
+    "workflow-week": "node scripts/workflow_week_rank_changes.js",
+    "weekly-automated": "node scripts/weekly_automated_workflow.js",
+    "setup-cron": "bash scripts/setup_cron.sh",
+    "update-app-names": "node scripts/update_app_names_from_metadata.js"
   },
   "dependencies": {
     "playwright": "^1.58.1"
