@@ -1,6 +1,6 @@
 # SensorTower 周报数据工作流
 
-基于 SensorTower API 与本地 SQLite 的**休闲游戏（Casual）Top100 周报流水线**：抓取榜单、异动、元数据、下载/收益、商店信息，并支持 AI 生成前五异动描述与下架检测。
+基于 SensorTower API 与本地 SQLite 的**休闲游戏（Casual）Top100 周报流水线**：抓取榜单、异动、元数据、下载/收益、商店信息（通过 metadata 接口）、并支持 AI 生成前五异动描述、Top5 综述与下架检测。
 
 ---
 
@@ -56,7 +56,7 @@ npm run workflow-week 2026-03-02
 bash scripts/setup_cron.sh
 ```
 
-会注册：`weekly_automated_workflow.js`（内部计算本周一 → 跑上述工作流 + US 免费榜商店信息爬取）。
+会注册：`weekly_automated_workflow.js`（内部计算本周一 → 跑上述周报工作流 + US 免费榜商店页 **metadata 变更检测**）。
 
 ---
 
@@ -73,14 +73,16 @@ sensortower/
 │   ├── update_app_names_from_metadata.js
 │   ├── fetch_top100_sales.js           # 下载/收益
 │   ├── refill_rank_changes_publisher.js
-│   ├── generate_weekly_top5_comments.js # 前五一句话描述
-│   ├── generate_top5_overview.js       # 前五异动综述
-│   ├── detect_removed_games.js         # 下架检测（写库）
-│   ├── test_us_free_removed.js         # 下架测试（仅 JSON）
-│   ├── weekly_us_free_top100_storeinfo.js
+│   ├── generate_weekly_top5_comments.js    # 前五一句话描述（按榜单）
+│   ├── generate_top5_overview.js          # 前五异动综述（最近四周）
+│   ├── fetch_us_free_metadata_and_compare.js # US 免费榜商店页 metadata 变更检测
+│   ├── detect_removed_games.js            # 下架检测（写库 weekly_removed_games）
+│   ├── test_us_free_removed.js            # 下架测试（仅 JSON）
+│   ├── test_weekly_workflow_dryrun.js     # 每周工作流 DRYRUN（写入临时 DB）
+│   ├── weekly_us_free_top100_storeinfo.js # 旧版商店页爬取（Playwright，可选手动使用）
 │   ├── setup_cron.sh
 │   └── ...
-├── data/                       # SQLite 数据库（默认 sensortower_top100.db）
+├── data/                       # SQLite 数据库（默认 sensortower_top100.db；DRYRUN: sensortower_top100_dryrun.db）
 ├── output/                    # CSV、测试 JSON 等
 ├── logs/                      # 工作流日志
 ├── docs/                      # 详细文档
@@ -91,7 +93,7 @@ sensortower/
 
 ---
 
-## 工作流步骤概览（7 步）
+## 工作流步骤概览（7 步，周报主流程）
 
 | 步骤 | 脚本 | 说明 |
 |------|------|------|
@@ -109,6 +111,42 @@ sensortower/
 
 ---
 
+## 商店页相关流程
+
+### 1. US 免费榜商店页 metadata 变更检测（推荐）
+
+通过 SensorTower `/v1/{os}/apps` metadata 接口，每周对 US 免费榜 Top100 的商店页核心字段做对比：
+
+- 字段范围：`name`、`description`、`subtitle`、`short_description`、`screenshot_urls`
+- 表：
+  - `weekly_metadata_snapshot`：每周一的 metadata 快照（`rank_date + app_id + os` 为主键）
+  - `weekly_metadata_changes`：两周都在榜的 app，若上述字段有变化，则记录 old/new
+- 首次运行某周时，仅写入 `weekly_metadata_snapshot`，**不会生成变更记录**；从第二周开始才会产生 `weekly_metadata_changes`。
+
+运行方式：
+
+```bash
+# 单独跑一周的 metadata 对比
+node scripts/fetch_us_free_metadata_and_compare.js --date 2026-03-02
+```
+
+在自动化工作流中，会由 `weekly_automated_workflow.js` 在周报主流程之后自动调用。
+
+### 2. 旧版商店页爬取（Playwright）
+
+`weekly_us_free_top100_storeinfo.js` 通过 Playwright 打开 App Store / Google Play 实时页面，解析 subtitle / description / 截图并写入：
+
+- `gamestoreinfo` / `appstoreinfo`
+- `gamestoreinfo_changes` / `appstoreinfo_changes`
+
+> 目前自动化工作流默认 **不再调用** 该脚本，如需 HTML 级别的精细字段，可手动执行：
+>
+> ```bash
+> node scripts/weekly_us_free_top100_storeinfo.js --date 2026-03-02
+> ```
+
+---
+
 ## 常用命令
 
 ```bash
@@ -123,6 +161,9 @@ node scripts/detect_removed_games.js 2026-03-02
 
 # 测试美国免费榜下架（不写库，输出 JSON）
 node scripts/test_us_free_removed.js
+
+# DRYRUN：在临时数据库上完整跑一遍每周工作流（不影响正式库）
+node scripts/test_weekly_workflow_dryrun.js 2026-03-02
 ```
 
 ---
