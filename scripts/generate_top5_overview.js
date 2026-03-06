@@ -81,10 +81,16 @@ function loadOpenRouterConfig() {
     if (m4) model = m4[1].trim().replace(/^["']|["']$/g, '');
   }
   if (!key) return null;
+  let fallback = null;
+  for (const line of content.split('\n')) {
+    const m = line.match(/^\s*OPENROUTER_FALLBACK_MODEL\s*=\s*(.+)\s*$/);
+    if (m) fallback = m[1].trim().replace(/^["']|["']$/g, '') || null;
+  }
   return {
     apiKey: key,
     baseUrl: baseUrl || 'https://openrouter.ai/api/v1',
     model: model || 'moonshotai/kimi-k2.5',
+    fallbackModel: fallback || 'moonshotai/kimi-k2.5',
   };
 }
 
@@ -226,11 +232,35 @@ function buildPrompt(data) {
   return lines.join('\n');
 }
 
-function callOpenRouter(cfg, prompt) {
+function buildOpenRouterChatUrl(baseUrl) {
+  const normalized = String(baseUrl || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
+  // 不能用 new URL('/chat/completions', baseUrl)，否则会把 /api/v1 截掉，打到 HTML 错误页。
+  return new URL(normalized + '/chat/completions');
+}
+
+function extractMessageText(content) {
+  if (typeof content === 'string') {
+    return content.trim();
+  }
+  if (Array.isArray(content)) {
+    return content
+      .map((item) => {
+        if (typeof item === 'string') return item;
+        if (item && typeof item === 'object' && typeof item.text === 'string') return item.text;
+        return '';
+      })
+      .join('')
+      .trim();
+  }
+  return '';
+}
+
+function callOpenRouter(cfg, prompt, useFallbackModel = false) {
+  const model = useFallbackModel ? (cfg.fallbackModel || 'moonshotai/kimi-k2.5') : cfg.model;
   return new Promise((resolve, reject) => {
-    const url = new URL('/chat/completions', cfg.baseUrl);
+    const url = buildOpenRouterChatUrl(cfg.baseUrl);
     const body = JSON.stringify({
-      model: cfg.model,
+      model,
       messages: [{ role: 'user', content: prompt }],
       max_tokens: 800,
       temperature: 0.5,
@@ -249,13 +279,24 @@ function callOpenRouter(cfg, prompt) {
         if (res.statusCode !== 200) {
           return reject(new Error(`OpenRouter HTTP ${res.statusCode}: ${data.slice(0, 300)}`));
         }
+        const trimmed = (data || '').trim();
+        if (trimmed.startsWith('<') || trimmed.startsWith('<!')) {
+          return reject(new Error('OpenRouter 返回 HTML 而非 JSON，可能为错误页或网关异常'));
+        }
         try {
           const json = JSON.parse(data);
-          const text =
-            json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content;
-          resolve((text || '').trim());
+          const content =
+            json && json.choices && json.choices[0] && json.choices[0].message
+              ? json.choices[0].message.content
+              : null;
+          const text = extractMessageText(content);
+          if (!text) {
+            const preview = JSON.stringify(json).slice(0, 500);
+            return reject(new Error('OpenRouter 返回空内容，响应片段: ' + preview));
+          }
+          resolve(text);
         } catch (e) {
-          reject(new Error('OpenRouter 响应解析失败: ' + e.message));
+          reject(new Error('OpenRouter 响应解析失败: ' + (trimmed ? trimmed.slice(0, 80) : e.message)));
         }
       });
     });
@@ -321,8 +362,15 @@ async function main() {
       statement = await callOpenRouter(cfg, buildPrompt(data));
       modelUsed = cfg.model;
     } catch (e) {
-      console.error('OpenRouter 调用失败:', e.message);
-      statement = '（本周 Top5 趋势数据已就绪，综述生成失败：' + e.message + '）';
+      console.error('OpenRouter 主模型调用失败:', e.message);
+      try {
+        console.log('使用 fallback 模型重试:', cfg.fallbackModel || 'moonshotai/kimi-k2.5');
+        statement = await callOpenRouter(cfg, buildPrompt(data), true);
+        modelUsed = cfg.fallbackModel || 'moonshotai/kimi-k2.5';
+      } catch (e2) {
+        console.error('Fallback 模型调用失败:', e2.message);
+        statement = '（本周 Top5 趋势数据已就绪，综述生成失败：' + e2.message + '）';
+      }
     }
   } else {
     console.log('未配置 OPENROUTER_API_KEY，写入占位综述');

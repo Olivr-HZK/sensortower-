@@ -1,6 +1,6 @@
 # SensorTower 周报数据工作流
 
-基于 SensorTower API 与本地 SQLite 的**休闲游戏（Casual）Top100 周报流水线**：抓取榜单、异动、元数据、下载/收益、商店信息（通过 metadata 接口）、并支持 AI 生成前五异动描述、Top5 综述与下架检测。
+基于 SensorTower API 与本地 SQLite 的**休闲游戏（Casual）Top100 周报流水线**：抓取榜单、异动、元数据、下载/收益、商店信息（通过 metadata 接口）、并支持 AI 生成 Top5 综述与下架检测。
 
 ---
 
@@ -42,7 +42,7 @@ SENSORTOWER_API_TOKEN=你的token
 
 ### 3. 跑完整周报工作流（推荐）
 
-传入「本周一」日期（YYYY-MM-DD），一次执行 7 步：Top100、异动、Metadata、应用名、下载/收益、Publisher、前五描述、Top5 综述。
+传入「本周一」日期（YYYY-MM-DD），一次执行 8 步：Top100、异动、Metadata、应用名、下载/收益、Publisher、Top5 综述、US 免费榜 metadata 对比、下架检测。
 
 ```bash
 node scripts/workflow_week_rank_changes.js 2026-03-02
@@ -56,7 +56,7 @@ npm run workflow-week 2026-03-02
 bash scripts/setup_cron.sh
 ```
 
-会注册：`weekly_automated_workflow.js`（内部计算本周一 → 跑上述周报工作流 + US 免费榜商店页 **metadata 变更检测**）。
+会注册：`weekly_automated_workflow.js`（内部计算本周一 → 跑完整 8 步周报工作流）。
 
 ---
 
@@ -65,7 +65,7 @@ bash scripts/setup_cron.sh
 ```
 sensortower/
 ├── scripts/                    # 主脚本（Node.js）
-│   ├── workflow_week_rank_changes.js   # 7 步周报工作流
+│   ├── workflow_week_rank_changes.js   # 8 步周报工作流
 │   ├── weekly_automated_workflow.js    # 定时任务入口
 │   ├── fetch_top100_to_db.js          # Top100 榜单（Casual）
 │   ├── generate_rank_changes_from_db.js
@@ -73,7 +73,6 @@ sensortower/
 │   ├── update_app_names_from_metadata.js
 │   ├── fetch_top100_sales.js           # 下载/收益
 │   ├── refill_rank_changes_publisher.js
-│   ├── generate_weekly_top5_comments.js    # 前五一句话描述（按榜单）
 │   ├── generate_top5_overview.js          # 前五异动综述（最近四周）
 │   ├── fetch_us_free_metadata_and_compare.js # US 免费榜商店页 metadata 变更检测
 │   ├── detect_removed_games.js            # 下架检测（写库 weekly_removed_games）
@@ -93,7 +92,7 @@ sensortower/
 
 ---
 
-## 工作流步骤概览（7 步，周报主流程）
+## 工作流步骤概览（8 步，周报主流程）
 
 | 步骤 | 脚本 | 说明 |
 |------|------|------|
@@ -103,11 +102,12 @@ sensortower/
 | 3.5 | `update_app_names_from_metadata.js` | 用 metadata 更新 Top100 应用名 |
 | 4 | `fetch_top100_sales.js` | 上一周下载量/收益写入 Top100 与 rank_changes |
 | 5 | `refill_rank_changes_publisher.js` | 补全 publisher、store_url |
-| 6 | `generate_weekly_top5_comments.js` | 各榜单前五一句话异动（可选 OpenRouter） |
-| 7 | `generate_top5_overview.js` | 最近四周 Top5 异动综述（可选 OpenRouter） |
+| 6 | `generate_top5_overview.js` | 最近四周 Top5 异动综述（可选 OpenRouter） |
+| 7 | `fetch_us_free_metadata_and_compare.js` | US 免费榜商店页 metadata 快照与两周对比 |
+| 8 | `detect_removed_games.js` | 检测上一周榜单中的游戏是否已下架 |
 
 - **榜单品类**：iOS `7003`（Casual），Android `game_casual`。  
-- **日期约定**：用户/定时任务只传「本周一」；榜单 API 用周日，库存周一；下载/收益为「上一周」周一～周日。
+- **日期约定**：用户/定时任务只传「本周一」；榜单 API 用周日，库存周一；下载/收益为「上一周」周一～周日；`detect_removed_games.js` 在主工作流中会自动改查「上周一」对应榜单。
 
 ---
 
@@ -130,7 +130,7 @@ sensortower/
 node scripts/fetch_us_free_metadata_and_compare.js --date 2026-03-02
 ```
 
-在自动化工作流中，会由 `weekly_automated_workflow.js` 在周报主流程之后自动调用。
+在自动化工作流中，这一步已经包含在 `workflow_week_rank_changes.js` 主流程里。
 
 ### 2. 旧版商店页爬取（Playwright）
 
@@ -156,8 +156,8 @@ node scripts/fetch_top100_to_db.js 2026-03-02
 # 仅生成异动
 node scripts/generate_rank_changes_from_db.js
 
-# 仅跑下架检测（写 weekly_removed_games 表）
-node scripts/detect_removed_games.js 2026-03-02
+# 仅跑下架检测（参数代表要检测的那一周周一）
+node scripts/detect_removed_games.js 2026-02-23
 
 # 测试美国免费榜下架（不写库，输出 JSON）
 node scripts/test_us_free_removed.js

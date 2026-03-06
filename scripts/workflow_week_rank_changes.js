@@ -13,8 +13,9 @@
  *   3.5. update_app_names_from_metadata.js → 从 app_metadata 更新 apple_top100 / android_top100 的 app_name
  *   4. fetch_top100_sales.js [本周一] → 为 Top100 写入「上一周」下载/收益，并同步覆盖 rank_changes 的 downloads/revenue
  *   5. refill_rank_changes_publisher.js   → 为 rank_changes 补全 publisher_name、store_url
- *   6. generate_weekly_top5_comments.js [本周一] → 为每个榜单前五生成一句话异动描述，写入 weekly_top5_comments
- *   7. generate_top5_overview.js [本周一] → 汇总最近四周 Top5 趋势，生成「Top5 异动综述」写入 weekly_top5_overview
+ *   6. generate_top5_overview.js [本周一] → 汇总最近四周 Top5 趋势，生成「Top5 异动综述」写入 weekly_top5_overview
+ *   7. fetch_us_free_metadata_and_compare.js [本周一] → US 免费榜商店页 metadata 变更检测，写入 weekly_metadata_snapshot / weekly_metadata_changes
+ *   8. detect_removed_games.js [上周一] → 检查“上一周榜单”中的游戏是否在商店下架，写入 weekly_removed_games
  *
  * 运行：
  *   node workflow_week_rank_changes.js 2026-02-09
@@ -52,6 +53,16 @@ function run(name, cmd, dbFile) {
   });
 }
 
+function getPreviousMonday(monday) {
+  const d = new Date(monday + 'T12:00:00Z');
+  if (isNaN(d.getTime())) return null;
+  d.setUTCDate(d.getUTCDate() - 7);
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 function main() {
   const monday = process.argv[2];
   if (!monday || !/^\d{4}-\d{2}-\d{2}$/.test(monday.trim())) {
@@ -60,6 +71,11 @@ function main() {
     process.exit(1);
   }
   const m = monday.trim();
+  const previousMonday = getPreviousMonday(m);
+  if (!previousMonday) {
+    console.error('无法从本周一推导上周一:', m);
+    process.exit(1);
+  }
   const dbArg = process.argv[3];
   const dbFile = dbArg
     ? (path.isAbsolute(dbArg) ? dbArg : path.join(ROOT, dbArg))
@@ -71,43 +87,48 @@ function main() {
   }
 
   run(
-    '1/7 抓取指定周 Top100（本周一 + 上周一）',
+    '1/8 抓取指定周 Top100（本周一 + 上周一）',
     `"${NODE_PATH}" fetch_top100_to_db.js ${m}`,
     dbFile
   );
   run(
-    '2/7 生成榜单异动',
+    '2/8 生成榜单异动',
     `"${NODE_PATH}" generate_rank_changes_from_db.js`,
     dbFile
   );
   run(
-    '3/7 拉取 App Metadata（ios + android）',
+    '3/8 拉取 App Metadata（ios + android）',
     `"${NODE_PATH}" fetch_app_metadata_to_db.js`,
     dbFile
   );
   run(
-    '3.5/7 从 App Metadata 更新应用名称',
+    '3.5/8 从 App Metadata 更新应用名称',
     `"${NODE_PATH}" update_app_names_from_metadata.js`,
     dbFile
   );
   run(
-    '4/7 为 Top100 & 异动补充上一周下载/收益',
+    '4/8 为 Top100 & 异动补充上一周下载/收益',
     `"${NODE_PATH}" fetch_top100_sales.js ${m}`,
     dbFile
   );
   run(
-    '5/7 补全异动表的开发者/公司、商店链接',
+    '5/8 补全异动表的开发者/公司、商店链接',
     `"${NODE_PATH}" refill_rank_changes_publisher.js`,
     dbFile
   );
   run(
-    '6/7 生成 Top100 前五异动一句话描述',
-    `"${NODE_PATH}" generate_weekly_top5_comments.js ${m}`,
+    '6/8 生成 Top5 异动综述（最近四周趋势）',
+    `"${NODE_PATH}" generate_top5_overview.js ${m}`,
     dbFile
   );
   run(
-    '7/7 生成 Top5 异动综述（最近四周趋势）',
-    `"${NODE_PATH}" generate_top5_overview.js ${m}`,
+    '7/8 US 免费榜商店页 metadata 变更检测',
+    `"${NODE_PATH}" fetch_us_free_metadata_and_compare.js --date ${m}`,
+    dbFile
+  );
+  run(
+    '8/8 检测上一周 Top100 游戏是否下架',
+    `"${NODE_PATH}" detect_removed_games.js ${previousMonday}`,
     dbFile
   );
 
@@ -115,8 +136,9 @@ function main() {
   console.log('指定周工作流全部完成。本周一:', m);
   console.log('  - apple_top100 / android_top100：已写入指定两周数据（应用名称已从 app_metadata 更新）');
   console.log('  - rank_changes：异动 + downloads/revenue + publisher_name + store_url');
-  console.log('  - weekly_top5_comments：各平台/国家/榜单前五的一句话异动描述');
   console.log('  - weekly_top5_overview：Top5 异动综述（最近四周）');
+  console.log('  - weekly_metadata_snapshot / weekly_metadata_changes：US 免费榜商店页 metadata 快照与变更');
+  console.log('  - weekly_removed_games：上一周 Top100 内疑似下架游戏记录（rank_date = ' + previousMonday + '）');
   console.log('  - app_metadata：Top100 涉及的 app 已拉取');
   console.log('  - app_name_cache：已从 app_metadata 更新');
   console.log('  - 榜单异动.csv：已更新');

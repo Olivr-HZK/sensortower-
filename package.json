@@ -1,16 +1,20 @@
 {
   "name": "sensortower-scripts",
   "version": "1.0.0",
-  "description": "Scripts for Sensor Tower and Google Play crawling",
+  "description": "SensorTower Casual Top100 weekly workflow and reporting scripts",
   "scripts": {
     "crawl-google-play": "node scripts/crawl_google_play.js",
     "fetch-top100": "node scripts/fetch_top100_to_db.js",
     "generate-changes": "node scripts/generate_rank_changes_from_db.js",
-    "fetch-sales": "node scripts/fetch_rank_changes_sales.js",
+    "fetch-sales": "node scripts/fetch_top100_sales.js",
     "workflow-week": "node scripts/workflow_week_rank_changes.js",
     "weekly-automated": "node scripts/weekly_automated_workflow.js",
     "setup-cron": "bash scripts/setup_cron.sh",
-    "update-app-names": "node scripts/update_app_names_from_metadata.js"
+    "update-app-names": "node scripts/update_app_names_from_metadata.js",
+    "top5-overview": "node scripts/generate_top5_overview.js",
+    "compare-us-free-metadata": "node scripts/fetch_us_free_metadata_and_compare.js",
+    "detect-removed": "node scripts/detect_removed_games.js",
+    "dryrun-weekly": "node scripts/test_weekly_workflow_dryrun.js"
   },
   "dependencies": {
     "playwright": "^1.58.1"

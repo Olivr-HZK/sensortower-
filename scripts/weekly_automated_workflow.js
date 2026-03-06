@@ -11,10 +11,8 @@
  *
  * 2) 本脚本执行步骤
  *    - 计算「本周一」日期（本地时间）。
- *    - 步骤 1/2：运行 workflow_week_rank_changes.js <本周一>
- *        → 拉取该周+上周的周日榜单、生成异动、拉 metadata、更新名称、拉下载/收益（当周周一~周日）、补全 publisher、生成 Top5 文案与综述。
- *    - 步骤 2/2：运行 fetch_us_free_metadata_and_compare.js --date <本周一>
- *        → 通过 /v1/{os}/apps metadata 接口获取 US 免费榜 Top100（iOS+Android）商店页信息，并与上周快照对比写入 weekly_metadata_changes。
+ *    - 步骤 1/1：运行 workflow_week_rank_changes.js <本周一>
+ *        → 拉取该周+上周的周日榜单、生成异动、拉 metadata、更新名称、拉下载/收益（当周周一~周日）、补全 publisher、生成 Top5 综述、US 免费榜商店页 metadata 变更检测，以及对“上一周榜单”做下架检测。
  *
  * 3) 数据库
  *    - 默认使用 data/sensortower_top100.db（可通过环境变量 SENSORTOWER_DB_FILE 覆盖）。
@@ -152,8 +150,8 @@ function main() {
   // 使用当前 Node 可执行路径，避免 cron 环境下 PATH 无 node 导致 command not found
   const nodePath = process.execPath;
 
-  // 步骤 1: 执行完整周报工作流（Top100 + 异动 + metadata + 下载/收益 + Top5 文案等）
-  log('\n📊 步骤 1/2: 执行完整周报工作流');
+  // 步骤 1: 执行完整周报工作流（Top100 + 异动 + metadata + 下载/收益 + Top5 综述 + 商店页变更 + 下架检测）
+  log('\n📊 步骤 1/1: 执行完整周报工作流');
   const workflowSuccess = runCommand(
     '完整周报工作流',
     `"${nodePath}" workflow_week_rank_changes.js ${monday}`,
@@ -164,22 +162,7 @@ function main() {
     successCount++;
   } else {
     failCount++;
-    logError('完整周报工作流执行失败，但继续执行下一步');
-  }
-  
-  // 步骤 2: 执行基于 metadata 的商店页信息变更检测
-  log('\n📝 步骤 2/2: 执行 US 免费榜商店页 metadata 变更检测');
-  const metadataChangeSuccess = runCommand(
-  'US 免费榜 metadata 变更检测',
-  `"${nodePath}" fetch_us_free_metadata_and_compare.js --date ${monday}`,
-  DB_FILE
-  );
-  
-  if (metadataChangeSuccess) {
-    successCount++;
-  } else {
-    failCount++;
-    logError('US 免费榜 metadata 变更检测执行失败');
+    logError('完整周报工作流执行失败');
   }
   
   // 总结
@@ -190,8 +173,8 @@ function main() {
   log('每周自动工作流执行完成');
   log('='.repeat(60));
   log(`执行时间: ${duration} 分钟`);
-  log(`成功: ${successCount}/2`);
-  log(`失败: ${failCount}/2`);
+  log(`成功: ${successCount}/1`);
+  log(`失败: ${failCount}/1`);
   log(`日志文件: ${LOG_FILE}`);
   log('='.repeat(60));
   
