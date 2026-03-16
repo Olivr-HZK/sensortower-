@@ -36,7 +36,8 @@ SENSORTOWER_API_TOKEN=你的token
 
 # 可选：AI 前五异动描述 / 综述（OpenRouter 中转）
 # OPENROUTER_API_KEY=sk-or-v1-...
-# OPENROUTER_MODEL=google/gemini-3-pro-preview
+# OPENROUTER_MODEL=qwen/qwen3-32b
+# OPENROUTER_FALLBACK_MODEL=qwen/qwen3-30b-a3b
 # OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
 ```
 

@@ -9,7 +9,6 @@
   {"app_id": "ai.perplexity.app.android", "platform": "android"},
   {"app_id": "com.codeway.chatapp", "platform": "android"},
   {"app_id": "com.smartwidgetlabs.chatgpt", "platform": "android"},
-  {"app_id": "com.spotify.music", "platform": "android"},
   {"app_id": "324684580", "platform": "ios"},
   {"app_id": "525463029", "platform": "ios"},
   {"app_id": "1398000105", "platform": "ios"},
@@ -23,6 +22,5 @@
   {"app_id": "com.ximalaya.ting.himalaya", "platform": "android"},
   {"app_id": "com.openai.chatgpt", "platform": "android"},
   {"app_id": "6448311069", "platform": "ios"},
-  {"app_id": "com.google.android.apps.bard", "platform": "android"},
   {"app_id": "6477489729", "platform": "ios"}
 ]

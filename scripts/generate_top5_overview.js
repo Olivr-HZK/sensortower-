@@ -89,8 +89,8 @@ function loadOpenRouterConfig() {
   return {
     apiKey: key,
     baseUrl: baseUrl || 'https://openrouter.ai/api/v1',
-    model: model || 'moonshotai/kimi-k2.5',
-    fallbackModel: fallback || 'moonshotai/kimi-k2.5',
+    model: model || 'qwen/qwen3-32b',
+    fallbackModel: fallback || 'qwen/qwen3-30b-a3b',
   };
 }
 
@@ -256,7 +256,7 @@ function extractMessageText(content) {
 }
 
 function callOpenRouter(cfg, prompt, useFallbackModel = false) {
-  const model = useFallbackModel ? (cfg.fallbackModel || 'moonshotai/kimi-k2.5') : cfg.model;
+  const model = useFallbackModel ? (cfg.fallbackModel || 'qwen/qwen3-30b-a3b') : cfg.model;
   return new Promise((resolve, reject) => {
     const url = buildOpenRouterChatUrl(cfg.baseUrl);
     const body = JSON.stringify({
@@ -344,11 +344,7 @@ async function main() {
 
   const data = collectTop5Trends(currentMonday);
   if (data.length === 0) {
-    console.log('未获取到任何 Top5 趋势数据，写入空综述');
-    runSql(`
-      INSERT OR REPLACE INTO weekly_top5_overview (rank_date, statement, trend_json, model_used)
-      VALUES (${escapeSqlValue(currentMonday)}, '', NULL, NULL)
-    `);
+    console.log('未获取到任何 Top5 趋势数据，跳过写入 weekly_top5_overview');
     return;
   }
 
@@ -364,17 +360,20 @@ async function main() {
     } catch (e) {
       console.error('OpenRouter 主模型调用失败:', e.message);
       try {
-        console.log('使用 fallback 模型重试:', cfg.fallbackModel || 'moonshotai/kimi-k2.5');
+        console.log('使用 fallback 模型重试:', cfg.fallbackModel || 'qwen/qwen3-30b-a3b');
         statement = await callOpenRouter(cfg, buildPrompt(data), true);
-        modelUsed = cfg.fallbackModel || 'moonshotai/kimi-k2.5';
+        modelUsed = cfg.fallbackModel || 'qwen/qwen3-30b-a3b';
       } catch (e2) {
         console.error('Fallback 模型调用失败:', e2.message);
-        statement = '（本周 Top5 趋势数据已就绪，综述生成失败：' + e2.message + '）';
+        throw new Error('Top5 异动综述生成失败：' + e2.message);
       }
     }
   } else {
-    console.log('未配置 OPENROUTER_API_KEY，写入占位综述');
-    statement = '（未配置 OpenRouter，未生成 AI 综述）';
+    throw new Error('未配置 OPENROUTER_API_KEY，跳过写入 weekly_top5_overview');
+  }
+
+  if (!statement || !statement.trim()) {
+    throw new Error('Top5 异动综述为空，跳过写入 weekly_top5_overview');
   }
 
   const trendJson = JSON.stringify(data, null, 0);
