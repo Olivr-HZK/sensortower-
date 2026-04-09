@@ -1367,6 +1367,38 @@
         "product_code": "G-058",
         "apple_app_id": "6756872090",
         "google_app_id": "com.arrow.madness.games.arrows.escape.puzzle.game",
+        "competitors": [
+            {
+                "name": "Arrows Puzzle Escape",
+                "apple_app_id": "6748397500",
+                "google_app_id": "com.ecffri.arrows"
+            },
+            {
+                "name": "Arrows GO!",
+                "apple_app_id": "6758326278",
+                "google_app_id": "com.oakever.arrows"
+            },
+            {
+                "name": "Arrow Puzzle: Tap Puzzle Games",
+                "apple_app_id": "6755482314",
+                "google_app_id": "com.easybrain.arrow.puzzle.game"
+            },
+            {
+                "name": "Snake Escape",
+                "apple_app_id": "6753841130",
+                "google_app_id": "com.snake.escape.maze.slither.puzzle"
+            },
+            {
+                "name": "Arrow Out",
+                "apple_app_id": "6754243057",
+                "google_app_id": "com.arrow.out"
+            },
+            {
+                "name": "Arrowscapes",
+                "apple_app_id": "6755216191",
+                "google_app_id": "com.red.arrows.android"
+            }
+        ],
         "us_free_category_ranking_summary": {
             "country": "US",
             "ios": {

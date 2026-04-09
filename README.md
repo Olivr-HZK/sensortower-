@@ -9,7 +9,7 @@
 - **Node.js**（主运行环境）
 - **sqlite3** 命令行（系统自带或 `brew install sqlite3`）
 - **Playwright**（仅商店页爬取步骤需要）：`npx playwright install chromium`
-- **Python 3**（可选）：用于 S3 同步、导出等脚本时需安装 `requirements.txt` 依赖
+- **Python 3**（可选）：运行 S3 同步、多维表格导出、或根目录实验性 `fetch_top100_to_db.py` 时，执行 `pip install -r requirements.txt`（见 `requirements.txt` 内注释）
 
 ---
 
@@ -21,6 +21,8 @@
 npm install
 # 若需跑商店页爬取
 npx playwright install chromium
+# 若需跑 Python 辅助脚本（S3、导出、requests 类脚本）
+pip install -r requirements.txt
 ```
 
 ### 2. 配置环境变量
@@ -80,8 +82,15 @@ sensortower/
 │   ├── test_us_free_removed.js            # 下架测试（仅 JSON）
 │   ├── test_weekly_workflow_dryrun.js     # 每周工作流 DRYRUN（写入临时 DB）
 │   ├── weekly_us_free_top100_storeinfo.js # 旧版商店页爬取（Playwright，可选手动使用）
+│   ├── us_free_appid_weekly_rank_changes.js  # 我方产品 US 免费榜周环比 + 飞书
+│   ├── fetch_us_free_category_ranking_summary.js
+│   ├── fetch_app_ranks_workflow.js
+│   ├── copy_arrow_madness_to_us_free_weekly.js
 │   ├── setup_cron.sh
 │   └── ...
+├── arrow_madness_rank_parse.js   # 与 compare_and_summarize / 我方产品周报共用解析
+├── compare_and_summarize.js
+├── fetch_app_ranks.js
 ├── data/                       # SQLite 数据库（默认 sensortower_top100.db；DRYRUN: sensortower_top100_dryrun.db）
 ├── output/                    # CSV、测试 JSON 等
 ├── logs/                      # 工作流日志
@@ -156,7 +165,7 @@ node scripts/fetch_us_free_metadata_and_compare.js --date 2026-03-02
 
 | 文件 / 库 | 说明 |
 |-----------|------|
-| `data/appid_us.json` | 我方产品清单（含 `apple_app_id`、`google_app_id`、产品编码等）；字段 `us_free_category_ranking_summary` 由步骤 1 脚本回写，供步骤 2 决定拉哪些免费榜维度 |
+| `data/appid_us.json` | 我方产品清单（含 `apple_app_id`、`google_app_id`、产品编码等）；字段 `us_free_category_ranking_summary` 由步骤 1 回写；可选 `competitors`（`[{ name, apple_app_id?, google_app_id? }]`）与本品共用同一套 summary 榜单维度，仅 app id 不同，飞书内竞品默认折叠展示 |
 | `data/us_free_appid_weekly.db` | 周环比排名结果（本地生成，默认不提交） |
 
 ### 推荐工作流
@@ -168,13 +177,14 @@ node scripts/fetch_us_free_metadata_and_compare.js --date 2026-03-02
    ```
 
 2. **周环比排名与简报**（写库 + 可选飞书）  
-   依据 `us_free_category_ranking_summary` 展开查询维度，用 `category_history` 批量拉取排名（与根目录 `arrow_madness_rank_parse.js` 解析逻辑一致）；若摘要为空则回退为 game / casual / board / card / puzzle 等维度组合。  
+   依据 `us_free_category_ranking_summary` 展开查询维度，用 `category_history` 批量拉取排名（与根目录 `arrow_madness_rank_parse.js` 解析逻辑一致）；若摘要为空则回退为 game / casual / board / card / puzzle 等维度组合；若配置了 `competitors`，则按同一维度拉竞品并与本品一起出简报/飞书。  
    ```bash
    node scripts/us_free_appid_weekly_rank_changes.js [DATE_NEW] [DATE_OLD]
    npm run us-free-weekly
    ```  
    不传日期时，`DATE_NEW` 为「最近一个周日」、`DATE_OLD` 为其前一周同日。  
-   环境变量：`SENSORTOWER_API_TOKEN`（必填）；`FEISHU_WEBHOOK_URL`（推送时）；遇 API 频率限制（如 11232）脚本会退避重试。
+   其它用法：`--no-feishu` 不写飞书；`--feishu-only` 仅用库内已有数据重推飞书；`--verify-urls` 校验概览链接。  
+   环境变量：`SENSORTOWER_API_TOKEN`（必填）；`FEISHU_WEBHOOK_URL`（推送时）；`SENSORTOWER_OVERVIEW_BASE`（默认中国区概览域名）；`ST_CHINA_OVERVIEW_PARENT_ID`（可选，概览 URL 中的 project）；`FEISHU_RANK_DETAIL_EXPANDED=1`（可选，排名明细折叠块默认展开）。遇 API 频率限制（如 11232）脚本会退避重试。
 
 3. **（可选）仅重发飞书**  
    ```bash

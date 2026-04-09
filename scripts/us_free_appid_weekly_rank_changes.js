@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
  * 依据 data/appid_us.json 中 us_free_category_ranking_summary 的免费榜维度；
+ * 可选 competitors：[{ name, apple_app_id?, google_app_id? }] 与本品共用同一套 summary 榜单维度，仅 app id 不同；飞书折叠内竞品默认只展开「游戏总榜」行，其余分榜在内层 collapsible_panel。
  * 可选字段 us_free_weekly_note（如「游戏总榜」）会写入本地简报「备注」行及飞书折叠块首行。
  * 用 category_history（与 Arrow Madness 相同）拉取「上上周日 vs 上周日」排名，写入独立 SQLite；
  * API 拉取按「同 os+device+category+chart_type」合并 app_ids，每批最多 30 个（见 scripts/test_category_history_batch_params.js）；
@@ -17,7 +18,7 @@
  *       SENSORTOWER_OVERVIEW_BASE（默认 https://app.sensortower-china.com）、
  *       ST_CHINA_OVERVIEW_PARENT_ID（可选，overview 路径中的 project_id）
  *       FEISHU_RANK_DETAIL_EXPANDED=1（可选，排名明细折叠面板默认展开；默认折叠）
- * 飞书：顶部总结标题为「游戏总榜（ios/android/ipad）」有变化产品；在榜指前500；下方分榜明细按首字母、collapsible_panel（需飞书 ≥7.9）。
+ * 飞书：顶部摘要与折叠标题在游戏名后接（ios/android 环比）；iPad 仅在正文明细；在榜指前500；分榜明细按首字母、collapsible_panel（需飞书 ≥7.9）。
  * 遇 11232 频率限制则退避重试。
  */
 
@@ -159,20 +160,24 @@ const FALLBACK_ANDROID_CATEGORY_ROWS = [
   { category: "game_puzzle", category_name: "Game/Puzzle" },
 ];
 
-function pushFallbackQueriesForApp(row, sum, out) {
+/**
+ * subject：与 appid_us 一条产品或竞品行对应的展示字段；含 apple_app_id / google_app_id。
+ */
+function pushFallbackQueriesForSubject(subject, sum, out) {
   const base = {
-    internal_name: row.internal_name,
-    product_code: row.product_code,
-    display_name: row.display_name,
-    apple_app_id: row.apple_app_id || null,
-    google_app_id: row.google_app_id || null,
+    internal_name: subject.internal_name,
+    product_code: subject.product_code,
+    display_name: subject.display_name,
+    apple_app_id: subject.apple_app_id || null,
+    google_app_id: subject.google_app_id || null,
     country: (sum && sum.country) || COUNTRY,
-    st_overview_parent_id: row.st_overview_parent_id || null,
-    us_free_weekly_note: row.us_free_weekly_note || null,
+    st_overview_parent_id: subject.st_overview_parent_id || null,
+    us_free_weekly_note: subject.us_free_weekly_note || null,
+    competitorParent: subject.competitorParent != null ? subject.competitorParent : null,
   };
 
-  if (row.apple_app_id) {
-    const aid = String(row.apple_app_id);
+  if (subject.apple_app_id) {
+    const aid = String(subject.apple_app_id);
     for (const rowCat of FALLBACK_IOS_CATEGORY_ROWS) {
       out.push({
         ...base,
@@ -199,8 +204,8 @@ function pushFallbackQueriesForApp(row, sum, out) {
     }
   }
 
-  if (row.google_app_id) {
-    const gid = String(row.google_app_id);
+  if (subject.google_app_id) {
+    const gid = String(subject.google_app_id);
     for (const rowCat of FALLBACK_ANDROID_CATEGORY_ROWS) {
       out.push({
         ...base,
@@ -217,32 +222,26 @@ function pushFallbackQueriesForApp(row, sum, out) {
   }
 }
 
-/**
- * 从 appid_us 一条记录展开为若干 q（优先 summary 中已有免费榜维度；若一条都没有则查 game/casual/board/card/puzzle 五类）
- */
-function expandQueriesForApp(row) {
-  const sum = row.us_free_category_ranking_summary;
-  if (!sum || sum.country !== "US") return [];
-
-  const out = [];
-
+/** 按 summary 中已有维度展开（与产品、竞品共用同一套 chart 列表） */
+function pushQueriesFromSummary(subject, sum, out) {
   const ios = sum.ios && sum.ios.charts && !sum.ios._error ? dedupeCharts(sum.ios.charts) : [];
   for (const ch of ios) {
-    if (!row.apple_app_id) continue;
+    if (!subject.apple_app_id) continue;
     if (ch.chart_type_id !== "topfreeapplications" && ch.chart_type_id !== "topfreeipadapplications") continue;
     const device = ch.chart_device === "ipad" ? "ipad" : "iphone";
     out.push({
-      internal_name: row.internal_name,
-      product_code: row.product_code,
-      display_name: row.display_name,
-      apple_app_id: row.apple_app_id || null,
-      google_app_id: row.google_app_id || null,
+      internal_name: subject.internal_name,
+      product_code: subject.product_code,
+      display_name: subject.display_name,
+      apple_app_id: subject.apple_app_id || null,
+      google_app_id: subject.google_app_id || null,
       country: (sum && sum.country) || COUNTRY,
-      st_overview_parent_id: row.st_overview_parent_id || null,
-      us_free_weekly_note: row.us_free_weekly_note || null,
+      st_overview_parent_id: subject.st_overview_parent_id || null,
+      us_free_weekly_note: subject.us_free_weekly_note || null,
+      competitorParent: subject.competitorParent != null ? subject.competitorParent : null,
       q: {
         os: "ios",
-        app_ids: [String(row.apple_app_id)],
+        app_ids: [String(subject.apple_app_id)],
         category: String(ch.category_id),
         chart_type_ids: [ch.chart_type_id],
         device,
@@ -253,20 +252,21 @@ function expandQueriesForApp(row) {
 
   const android = sum.android && sum.android.charts && !sum.android._error ? dedupeCharts(sum.android.charts) : [];
   for (const ch of android) {
-    if (!row.google_app_id) continue;
+    if (!subject.google_app_id) continue;
     if (ch.chart_type_id !== "topselling_free") continue;
     out.push({
-      internal_name: row.internal_name,
-      product_code: row.product_code,
-      display_name: row.display_name,
-      apple_app_id: row.apple_app_id || null,
-      google_app_id: row.google_app_id || null,
+      internal_name: subject.internal_name,
+      product_code: subject.product_code,
+      display_name: subject.display_name,
+      apple_app_id: subject.apple_app_id || null,
+      google_app_id: subject.google_app_id || null,
       country: (sum && sum.country) || COUNTRY,
-      st_overview_parent_id: row.st_overview_parent_id || null,
-      us_free_weekly_note: row.us_free_weekly_note || null,
+      st_overview_parent_id: subject.st_overview_parent_id || null,
+      us_free_weekly_note: subject.us_free_weekly_note || null,
+      competitorParent: subject.competitorParent != null ? subject.competitorParent : null,
       q: {
         os: "android",
-        app_ids: [String(row.google_app_id)],
+        app_ids: [String(subject.google_app_id)],
         category: String(ch.category_id),
         chart_type_ids: [ch.chart_type_id],
         device: "android",
@@ -274,9 +274,58 @@ function expandQueriesForApp(row) {
       },
     });
   }
+}
 
+/**
+ * 从 appid_us 一条记录展开为若干 q（优先 summary 中已有免费榜维度；若一条都没有则查 game/casual/board/card/puzzle 五类）。
+ * 可选 competitors[]：与本品共用同一套 summary 维度，仅替换 apple_app_id / google_app_id；internal_name 为「本品名·竞品·竞品名」。
+ */
+function expandQueriesForApp(row) {
+  const sum = row.us_free_category_ranking_summary;
+  if (!sum || sum.country !== "US") return [];
+
+  const out = [];
+
+  const selfSubject = {
+    internal_name: row.internal_name,
+    product_code: row.product_code,
+    display_name: row.display_name,
+    apple_app_id: row.apple_app_id || null,
+    google_app_id: row.google_app_id || null,
+    st_overview_parent_id: row.st_overview_parent_id || null,
+    us_free_weekly_note: row.us_free_weekly_note || null,
+    competitorParent: null,
+  };
+
+  pushQueriesFromSummary(selfSubject, sum, out);
   if (out.length === 0) {
-    pushFallbackQueriesForApp(row, sum, out);
+    pushFallbackQueriesForSubject(selfSubject, sum, out);
+  }
+
+  const comps = Array.isArray(row.competitors) ? row.competitors : [];
+  for (const comp of comps) {
+    const cname = String(comp.name || "").trim();
+    if (!cname) continue;
+    const apple = comp.apple_app_id != null && String(comp.apple_app_id).trim() !== "" ? String(comp.apple_app_id).trim() : null;
+    const google = comp.google_app_id != null && String(comp.google_app_id).trim() !== "" ? String(comp.google_app_id).trim() : null;
+    if (!apple && !google) continue;
+
+    const compSubject = {
+      internal_name: `${row.internal_name}·竞品·${cname}`,
+      product_code: row.product_code,
+      display_name: cname,
+      apple_app_id: apple,
+      google_app_id: google,
+      st_overview_parent_id: row.st_overview_parent_id || null,
+      us_free_weekly_note: row.us_free_weekly_note || null,
+      competitorParent: row.internal_name,
+    };
+
+    const before = out.length;
+    pushQueriesFromSummary(compSubject, sum, out);
+    if (out.length === before) {
+      pushFallbackQueriesForSubject(compSubject, sum, out);
+    }
   }
 
   return out;
@@ -400,18 +449,32 @@ function sortIntroEntriesByPlatform(entries) {
   );
 }
 
-function buildProductIntroGameLines(block) {
+/**
+ * 游戏名后全角括号：仅 **ios / android** 游戏总榜环比（不含 iPad；iPad 见下方明细）
+ */
+function buildIosAndroidGameTotalParen(block) {
   const entries = (block.rankEntries || []).filter((e) => isGameTotalBoardQuery(e.q));
   const changed = entries.filter((e) => introGameEntryHasChange(e.oldRank, e.newRank));
-  const sorted = sortIntroEntriesByPlatform(changed);
-  return sorted.map(
-    (e) => `**${introPlatformTag(e.q)}**：${formatIntroRankPair(e.oldRank, e.newRank)}`,
+  const iosAndroid = changed.filter((e) => {
+    const t = introPlatformTag(e.q);
+    return t === "ios" || t === "android";
+  });
+  const sorted = sortIntroEntriesByPlatform(iosAndroid);
+  if (sorted.length === 0) return "";
+  const parts = sorted.map(
+    (e) => `${introPlatformTag(e.q)} ${formatIntroRankPair(e.oldRank, e.newRank)}`,
   );
+  return `（${parts.join("，")}）`;
 }
 
-function productHasTotalBoardChange(block) {
+/** 顶部摘要是否展示：仅当 ios 或 android 游戏总榜有变化（仅 iPad 变化不进摘要） */
+function productHasIosAndroidGameTotalChange(block) {
   const entries = (block.rankEntries || []).filter((e) => isGameTotalBoardQuery(e.q));
-  return entries.some((e) => introGameEntryHasChange(e.oldRank, e.newRank));
+  return entries.some((e) => {
+    const t = introPlatformTag(e.q);
+    if (t !== "ios" && t !== "android") return false;
+    return introGameEntryHasChange(e.oldRank, e.newRank);
+  });
 }
 
 function sortBlocksByLabel(blocks) {
@@ -420,11 +483,134 @@ function sortBlocksByLabel(blocks) {
   );
 }
 
+/** internal_name 形如「本品·竞品·竞品名」时挂到本品折叠块下 */
+const RE_COMPETITOR_INTERNAL = /^(.+)·竞品·(.+)$/;
+
+/**
+ * 将竞品块合并进对应本品块 competitorPanels；无法匹配本品的竞品仍作独立块排在后面。
+ * @returns {Array}
+ */
+function mergeCompetitorBlocksIntoParents(blocks) {
+  if (!blocks || !blocks.length) return blocks;
+  const byParent = new Map();
+  const parents = [];
+  for (const b of blocks) {
+    const m = RE_COMPETITOR_INTERNAL.exec(String(b.internalName || ""));
+    if (m) {
+      const parentKey = m[1];
+      if (!byParent.has(parentKey)) byParent.set(parentKey, []);
+      byParent.get(parentKey).push(b);
+    } else {
+      parents.push(b);
+    }
+  }
+  for (const p of parents) {
+    const comps = byParent.get(p.internalName);
+    if (comps && comps.length) {
+      p.competitorPanels = comps
+        .sort((a, b) =>
+          String(a.displayName || "").localeCompare(String(b.displayName || ""), "zh-CN"),
+        )
+        .map((c) => {
+          c.feishuLabel = String(c.displayName || "").trim() || String(c.internalName || "");
+          return c;
+        });
+      byParent.delete(p.internalName);
+    } else {
+      p.competitorPanels = [];
+    }
+  }
+  const orphans = [];
+  for (const arr of byParent.values()) orphans.push(...arr);
+  orphans.sort((a, b) => linkTitleForProduct(a).localeCompare(linkTitleForProduct(b), "zh-CN"));
+  return parents.concat(orphans);
+}
+
+/** 按 rankEntries 与 isGameTotalBoardQuery 拆成游戏总榜行 vs 其余分榜行 */
+function partitionRankLinesByGameTotal(block) {
+  const entries = block.rankEntries || [];
+  const feishu = block.rankLines || [];
+  const plain = block.plainRankLines || [];
+  const totalF = [];
+  const restF = [];
+  const totalP = [];
+  const restP = [];
+  for (let i = 0; i < entries.length; i++) {
+    if (isGameTotalBoardQuery(entries[i].q)) {
+      totalF.push(feishu[i]);
+      totalP.push(plain[i]);
+    } else {
+      restF.push(feishu[i]);
+      restP.push(plain[i]);
+    }
+  }
+  return { totalF, restF, totalP, restP };
+}
+
+/**
+ * 竞品：默认只展示游戏总榜；其余分榜放入内层折叠。
+ * @param {{ titleInPanel?: boolean }} [opts] 为 true 时外层 collapsible 标题已含「竞品·名」，正文不再重复大标题
+ */
+function buildCompetitorGameTotalMarkdown(c, opts) {
+  const titleInPanel = opts && opts.titleInPanel;
+  const ids = c.ids || {};
+  const st = sensorTowerUrlForIds(ids);
+  const linkLabel = linkTitleForProduct(c);
+  const parts = [];
+  if (st) parts.push(`[${escapeMdLinkLabel(linkLabel)}](${st})`);
+  else parts.push(escapeMdLinkLabel(linkLabel));
+  if (ids.apple_app_id) parts.push(`[前往 Apple Store](${appleStoreUrl(ids.apple_app_id)})`);
+  if (ids.google_app_id) parts.push(`[前往 Google Play](${googlePlayUrl(ids.google_app_id)})`);
+  const headerMd = parts.join("  ");
+  const { totalF } = partitionRankLinesByGameTotal(c);
+  const lines = compactDisplayRankLines(totalF);
+  const body = lines.join("\n");
+  const linkBlock = `**快捷链接** · ${headerMd}`;
+  const head = titleInPanel
+    ? linkBlock
+    : `**竞品 · ${escapeMdLinkLabel(linkLabel)}**\n\n${linkBlock}`;
+  if (body) return `${head}\n\n**游戏总榜（各端）**\n${body}`;
+  return `${head}\n\n**游戏总榜（各端）**\n（无）`;
+}
+
+function buildCompetitorRestMarkdown(c) {
+  const { restF } = partitionRankLinesByGameTotal(c);
+  const lines = compactDisplayRankLines(restF);
+  const body = lines.join("\n");
+  if (!body) return "";
+  return `**各维度排名（非游戏总榜）**\n${body}`;
+}
+
+/** 折叠块内 Markdown：备注 + 快捷链接 + 各维度排名（本品与竞品复用） */
+function buildRankPanelMarkdownBody(block) {
+  const ids = block.ids || {};
+  const st = sensorTowerUrlForIds(ids);
+  const linkLabel = linkTitleForProduct(block);
+  const parts = [];
+  if (st) {
+    parts.push(`[${escapeMdLinkLabel(linkLabel)}](${st})`);
+  } else {
+    parts.push(escapeMdLinkLabel(linkLabel));
+  }
+  if (ids.apple_app_id) parts.push(`[前往 Apple Store](${appleStoreUrl(ids.apple_app_id)})`);
+  if (ids.google_app_id) parts.push(`[前往 Google Play](${googlePlayUrl(ids.google_app_id)})`);
+  const headerMd = parts.join("  ");
+  const noteLine = block.weeklySummaryNote
+    ? `**备注** · ${block.weeklySummaryNote}\n\n`
+    : "";
+  const lines = compactDisplayRankLines(block.rankLines || []);
+  const body = lines.join("\n");
+  if (body) {
+    return `${noteLine}**快捷链接** · ${headerMd}\n\n**各维度排名**\n${body}`;
+  }
+  return `${noteLine}**快捷链接** · ${headerMd}`;
+}
+
 function buildTotalBoardChangedIntroMarkdown(productBlocks) {
-  const qual = productBlocks.filter((b) => productHasTotalBoardChange(b));
+  const qual = productBlocks.filter((b) => productHasIosAndroidGameTotalChange(b));
   const sorted = sortBlocksByLabel(qual);
   if (sorted.length === 0) {
-    return "**提示** · 本周游戏各端总榜无可用变化；下方为全部分榜明细，按首字母排序。";
+    return "**提示** · 本周 **ios / android** 游戏总榜无可用变化（iPad 等见下方明细）；下方为全部分榜明细，按首字母排序。";
   }
   const chunks = sorted.map((b) => {
     const name = linkTitleForProduct(b);
@@ -432,13 +618,12 @@ function buildTotalBoardChangedIntroMarkdown(productBlocks) {
     const head = st
       ? `- [**${escapeMdLinkLabel(name)}**](${st})`
       : `- **${escapeMdLinkLabel(name)}**`;
-    const gameLines = buildProductIntroGameLines(b);
-    if (gameLines.length === 0) return head;
-    const indented = gameLines.map((ln) => `  · ${ln}`).join("\n");
-    return `${head}\n${indented}`;
+    return `${head}${buildIosAndroidGameTotalParen(b)}`;
   });
   return (
-    "**游戏总榜（ios / android / ipad）** · 有变化产品（按首字母）\n\n" + chunks.join("\n\n")
+    "**游戏总榜（ios / android）** · 有变化产品（按首字母）\n\n" +
+      "游戏名后括号为 **ios / android** 环比；iPad 等见下方；**详情见下方**各产品折叠。\n\n" +
+      chunks.join("\n")
   );
 }
 
@@ -729,16 +914,36 @@ function escapeMdLinkLabel(s) {
   return String(s).replace(/\]/g, "﹞").replace(/\[/g, "﹝");
 }
 
-/** 折叠面板标题：内部名（含重名后缀），过长截断 */
-function feishuPanelTitleFromProduct(block) {
-  const t = linkTitleForProduct(block).trim() || "产品";
+/** 飞书 plain_text 标题最长约 56 字；优先保留末尾括号（ios/android 环比） */
+function feishuTruncateWithOptionalParen(base, paren) {
   const max = 56;
-  if (t.length <= max) return t;
-  return `${t.slice(0, max - 1)}…`;
+  const b = String(base || "").trim() || "产品";
+  const p = paren ? String(paren) : "";
+  if (!p) return b.length <= max ? b : `${b.slice(0, max - 1)}…`;
+  const full = `${b}${p}`;
+  if (full.length <= max) return full;
+  const room = max - p.length;
+  if (room < 4) return `${b.slice(0, max - 1)}…`;
+  return `${b.slice(0, room - 1)}…${p}`;
+}
+
+/** 折叠面板标题：内部名（含重名后缀）；含竞品数量；游戏名后接 ios/android 括号环比 */
+function feishuPanelTitleFromProduct(block) {
+  let t = linkTitleForProduct(block).trim() || "产品";
+  const n = (block.competitorPanels || []).length;
+  if (n > 0) t = `${t} · ${n}竞品`;
+  const paren = buildIosAndroidGameTotalParen(block);
+  return feishuTruncateWithOptionalParen(t, paren);
+}
+
+/** 竞品游戏总榜折叠标题：竞品 · 名（ios…，android…） */
+function feishuCompetitorGameTotalPanelTitle(c) {
+  const base = `竞品 · ${linkTitleForProduct(c).trim() || "竞品"}`;
+  const paren = buildIosAndroidGameTotalParen(c);
+  return feishuTruncateWithOptionalParen(base, paren);
 }
 
 function buildFeishuCard(dateOld, dateNew, productBlocks) {
-  assignInternalNameLabels(productBlocks);
   const sortedBlocks = sortBlocksByLabel(productBlocks);
   const elements = [];
   elements.push({
@@ -796,28 +1001,60 @@ function buildFeishuCard(dateOld, dateNew, productBlocks) {
       padding: "8px",
       elements: [],
     };
+    const nestedPanelShell = {
+      tag: "collapsible_panel",
+      expanded: false,
+      background_color: "grey",
+      header: {
+        title: { tag: "plain_text", content: "" },
+        vertical_align: "center",
+        icon: {
+          tag: "standard_icon",
+          token: "down-small-ccm_outlined",
+          color: "",
+          size: "16px 16px",
+        },
+        icon_position: "right",
+        icon_expanded_angle: -180,
+      },
+      border: {
+        color: "grey",
+        corner_radius: "5px",
+      },
+      vertical_spacing: "8px",
+      padding: "8px",
+      elements: [],
+    };
     for (let i = 0; i < sortedBlocks.length; i++) {
       const block = sortedBlocks[i];
-      const ids = block.ids || {};
-      const st = sensorTowerUrlForIds(ids);
-      const parts = [];
-      const linkLabel = linkTitleForProduct(block);
-      if (st) {
-        parts.push(`[${escapeMdLinkLabel(linkLabel)}](${st})`);
-      } else {
-        parts.push(escapeMdLinkLabel(linkLabel));
+      const panelElements = [];
+      panelElements.push({ tag: "markdown", content: buildRankPanelMarkdownBody(block) });
+      const comps = block.competitorPanels || [];
+      for (const c of comps) {
+        const compTitle = feishuCompetitorGameTotalPanelTitle(c);
+        const compMd = buildCompetitorGameTotalMarkdown(c, { titleInPanel: true });
+        panelElements.push({
+          ...nestedPanelShell,
+          header: {
+            ...nestedPanelShell.header,
+            title: { tag: "plain_text", content: compTitle },
+          },
+          elements: [{ tag: "markdown", content: compMd }],
+        });
+        const restMd = buildCompetitorRestMarkdown(c);
+        if (restMd) {
+          let subTitle = `竞品 · ${linkTitleForProduct(c)} · 其他分榜`;
+          subTitle = feishuTruncateWithOptionalParen(subTitle, buildIosAndroidGameTotalParen(c));
+          panelElements.push({
+            ...nestedPanelShell,
+            header: {
+              ...nestedPanelShell.header,
+              title: { tag: "plain_text", content: subTitle },
+            },
+            elements: [{ tag: "markdown", content: restMd }],
+          });
+        }
       }
-      if (ids.apple_app_id) parts.push(`[前往 Apple Store](${appleStoreUrl(ids.apple_app_id)})`);
-      if (ids.google_app_id) parts.push(`[前往 Google Play](${googlePlayUrl(ids.google_app_id)})`);
-      const headerMd = parts.join("  ");
-      const noteLine = block.weeklySummaryNote
-        ? `**备注** · ${block.weeklySummaryNote}\n\n`
-        : "";
-      const lines = compactDisplayRankLines(block.rankLines || []);
-      const body = lines.join("\n");
-      const md = body
-        ? `${noteLine}**快捷链接** · ${headerMd}\n\n**各维度排名**\n${body}`
-        : `${noteLine}**快捷链接** · ${headerMd}`;
       elements.push({
         ...panelShell,
         header: {
@@ -827,7 +1064,7 @@ function buildFeishuCard(dateOld, dateNew, productBlocks) {
             content: feishuPanelTitleFromProduct(block),
           },
         },
-        elements: [{ tag: "markdown", content: md }],
+        elements: panelElements,
       });
     }
   }
@@ -1025,6 +1262,7 @@ async function feishuOnlyMain() {
         country: item.country || COUNTRY,
         st_overview_parent_id: item.st_overview_parent_id || null,
         weekly_note: item.us_free_weekly_note || null,
+        competitor_parent: item.competitorParent != null ? item.competitorParent : null,
         lines: [],
         feishuLines: [],
         rankEntries: [],
@@ -1041,7 +1279,6 @@ async function feishuOnlyMain() {
     process.exit(1);
   }
 
-  const productCount = byProduct.size;
   const lineCount = [...byProduct.values()].reduce((s, x) => s + x.lines.length, 0);
   const productBlocks = [];
   for (const info of byProduct.values()) {
@@ -1059,12 +1296,18 @@ async function feishuOnlyMain() {
       plainRankLines: info.lines,
       rankEntries: info.rankEntries,
       weeklySummaryNote: info.weekly_note || null,
+      competitorParent: info.competitor_parent || null,
     });
   }
 
-  console.log(`仅飞书推送：${DATE_OLD} → ${DATE_NEW}，产品 ${productCount}，维度 ${lineCount}`);
+  const mergedBlocks = mergeCompetitorBlocksIntoParents(productBlocks);
+  assignInternalNameLabels(mergedBlocks);
 
-  await sendFeishuWeeklyCard(webhook, DATE_OLD, DATE_NEW, productBlocks, productCount, lineCount);
+  console.log(
+    `仅飞书推送：${DATE_OLD} → ${DATE_NEW}，折叠块 ${mergedBlocks.length} 个（含竞品已并入本品），维度 ${lineCount}`,
+  );
+
+  await sendFeishuWeeklyCard(webhook, DATE_OLD, DATE_NEW, mergedBlocks, mergedBlocks.length, lineCount);
   console.log("飞书推送完成");
 }
 
@@ -1188,6 +1431,7 @@ async function main() {
         country: item.country || COUNTRY,
         st_overview_parent_id: item.st_overview_parent_id || null,
         weekly_note: item.us_free_weekly_note || null,
+        competitor_parent: item.competitorParent != null ? item.competitorParent : null,
         lines: [],
         feishuLines: [],
         rankEntries: [],
@@ -1199,7 +1443,6 @@ async function main() {
     bucket.rankEntries.push({ q: item.q, oldRank: o, newRank: n });
   }
 
-  const productCount = byProduct.size;
   const productBlocks = [];
   for (const info of byProduct.values()) {
     productBlocks.push({
@@ -1216,11 +1459,13 @@ async function main() {
       plainRankLines: info.lines,
       rankEntries: info.rankEntries,
       weeklySummaryNote: info.weekly_note || null,
+      competitorParent: info.competitor_parent || null,
     });
   }
-  assignInternalNameLabels(productBlocks);
+  const mergedBlocks = mergeCompetitorBlocksIntoParents(productBlocks);
+  assignInternalNameLabels(mergedBlocks);
   const summaryLines = [];
-  for (const block of productBlocks) {
+  for (const block of mergedBlocks) {
     const ids = block.ids;
     summaryLines.push(`【${linkTitleForProduct(block)}】`);
     if (block.weeklySummaryNote) summaryLines.push(`备注：${block.weeklySummaryNote}`);
@@ -1229,6 +1474,24 @@ async function main() {
     if (ids.apple_app_id) summaryLines.push(`Apple Store: ${appleStoreUrl(ids.apple_app_id)}`);
     if (ids.google_app_id) summaryLines.push(`Google Play: ${googlePlayUrl(ids.google_app_id)}`);
     summaryLines.push(...(block.plainRankLines || []));
+    const comps = block.competitorPanels || [];
+    for (const c of comps) {
+      summaryLines.push("");
+      summaryLines.push(`—— 竞品：${linkTitleForProduct(c)} ——`);
+      const cid = c.ids || {};
+      const cst = sensorTowerUrlForIds(cid);
+      if (cst) summaryLines.push(`SensorTower: ${cst}`);
+      if (cid.apple_app_id) summaryLines.push(`Apple Store: ${appleStoreUrl(cid.apple_app_id)}`);
+      if (cid.google_app_id) summaryLines.push(`Google Play: ${googlePlayUrl(cid.google_app_id)}`);
+      const { totalP, restP } = partitionRankLinesByGameTotal(c);
+      summaryLines.push("【游戏总榜】");
+      if (totalP.length) summaryLines.push(...totalP);
+      else summaryLines.push("（无游戏总榜维度）");
+      if (restP.length) {
+        summaryLines.push("【其他分榜】");
+        summaryLines.push(...restP);
+      }
+    }
     summaryLines.push("");
   }
   const summaryText = summaryLines.join("\n").trim();
@@ -1238,7 +1501,7 @@ async function main() {
     DATE_OLD,
     DATE_NEW,
     summaryText,
-    productCount,
+    mergedBlocks.length,
     lineCount,
   ]);
   fs.writeFileSync(DB_PATH, Buffer.from(db.export()));
@@ -1255,7 +1518,7 @@ async function main() {
       console.warn("未配置 FEISHU_WEBHOOK_URL，跳过飞书（可用 --no-feishu 消除本提示）");
     } else {
       try {
-        await sendFeishuWeeklyCard(webhook, DATE_OLD, DATE_NEW, productBlocks, productCount, lineCount);
+        await sendFeishuWeeklyCard(webhook, DATE_OLD, DATE_NEW, mergedBlocks, mergedBlocks.length, lineCount);
         console.log("飞书推送完成");
       } catch (e) {
         console.error("飞书推送失败:", e.message);
