@@ -1,0 +1,293 @@
+[
+  {
+    "app_name": "Arrow Madness",
+    "date": "2026-03-22",
+    "platform": "ios",
+    "device": "iphone",
+    "chart_type": "topfreeapplications",
+    "category": "6014",
+    "category_name": "Games",
+    "app_ids": [
+      "6756872090"
+    ],
+    "rank": null,
+    "raw_data": {
+      "lines": 0
+    }
+  },
+  {
+    "app_name": "Arrow Madness",
+    "date": "2026-03-22",
+    "platform": "ios",
+    "device": "iphone",
+    "chart_type": "topfreeapplications",
+    "category": "7003",
+    "category_name": "Games/Casual",
+    "app_ids": [
+      "6756872090"
+    ],
+    "rank": 286,
+    "raw_data": {
+      "6756872090": {
+        "US": {
+          "7003": {
+            "topfreeapplications": {
+              "name": "Arrow Madness: Tap Arrows Away",
+              "humanized_app_name": "Arrow Madness",
+              "icon": "https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/cf/fd/26/cffd2601-9f4f-f209-9b37-fc7155888c35/AppIcon-0-0-1x_U007emarketing-0-8-0-85-220.png/150x150bb.jpg",
+              "graphData": [
+                [
+                  1774137600,
+                  317,
+                  null
+                ]
+              ],
+              "chart_type": "topfreeapplications",
+              "category_name": "Games/Casual",
+              "todays_rank": 286
+            }
+          }
+        }
+      },
+      "lines": 1
+    }
+  },
+  {
+    "app_name": "Arrow Madness",
+    "date": "2026-03-22",
+    "platform": "ios",
+    "device": "iphone",
+    "chart_type": "topfreeapplications",
+    "category": "7012",
+    "category_name": "Games/Puzzle",
+    "app_ids": [
+      "6756872090"
+    ],
+    "rank": 242,
+    "raw_data": {
+      "6756872090": {
+        "US": {
+          "7012": {
+            "topfreeapplications": {
+              "name": "Arrow Madness: Tap Arrows Away",
+              "humanized_app_name": "Arrow Madness",
+              "icon": "https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/cf/fd/26/cffd2601-9f4f-f209-9b37-fc7155888c35/AppIcon-0-0-1x_U007emarketing-0-8-0-85-220.png/150x150bb.jpg",
+              "graphData": [
+                [
+                  1774137600,
+                  245,
+                  null
+                ]
+              ],
+              "chart_type": "topfreeapplications",
+              "category_name": "Games/Puzzle",
+              "todays_rank": 242
+            }
+          }
+        }
+      },
+      "lines": 1
+    }
+  },
+  {
+    "app_name": "Arrow Madness",
+    "date": "2026-03-22",
+    "platform": "ios",
+    "device": "ipad",
+    "chart_type": "topfreeipadapplications",
+    "category": "6014",
+    "category_name": "Games",
+    "app_ids": [
+      "6756872090"
+    ],
+    "rank": 236,
+    "raw_data": {
+      "6756872090": {
+        "US": {
+          "6014": {
+            "topfreeipadapplications": {
+              "name": "Arrow Madness: Tap Arrows Away",
+              "humanized_app_name": "Arrow Madness",
+              "icon": "https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/cf/fd/26/cffd2601-9f4f-f209-9b37-fc7155888c35/AppIcon-0-0-1x_U007emarketing-0-8-0-85-220.png/150x150bb.jpg",
+              "graphData": [
+                [
+                  1774137600,
+                  411,
+                  null
+                ]
+              ],
+              "chart_type": "topfreeipadapplications",
+              "category_name": "Games",
+              "todays_rank": 236
+            }
+          }
+        }
+      },
+      "lines": 1
+    }
+  },
+  {
+    "app_name": "Arrow Madness",
+    "date": "2026-03-22",
+    "platform": "ios",
+    "device": "ipad",
+    "chart_type": "topfreeipadapplications",
+    "category": "7003",
+    "category_name": "Games/Casual",
+    "app_ids": [
+      "6756872090"
+    ],
+    "rank": 119,
+    "raw_data": {
+      "6756872090": {
+        "US": {
+          "7003": {
+            "topfreeipadapplications": {
+              "name": "Arrow Madness: Tap Arrows Away",
+              "humanized_app_name": "Arrow Madness",
+              "icon": "https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/cf/fd/26/cffd2601-9f4f-f209-9b37-fc7155888c35/AppIcon-0-0-1x_U007emarketing-0-8-0-85-220.png/150x150bb.jpg",
+              "graphData": [
+                [
+                  1774137600,
+                  192,
+                  null
+                ]
+              ],
+              "chart_type": "topfreeipadapplications",
+              "category_name": "Games/Casual",
+              "todays_rank": 119
+            }
+          }
+        }
+      },
+      "lines": 1
+    }
+  },
+  {
+    "app_name": "Arrow Madness",
+    "date": "2026-03-22",
+    "platform": "ios",
+    "device": "ipad",
+    "chart_type": "topfreeipadapplications",
+    "category": "7012",
+    "category_name": "Games/Puzzle",
+    "app_ids": [
+      "6756872090"
+    ],
+    "rank": 91,
+    "raw_data": {
+      "6756872090": {
+        "US": {
+          "7012": {
+            "topfreeipadapplications": {
+              "name": "Arrow Madness: Tap Arrows Away",
+              "humanized_app_name": "Arrow Madness",
+              "icon": "https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/cf/fd/26/cffd2601-9f4f-f209-9b37-fc7155888c35/AppIcon-0-0-1x_U007emarketing-0-8-0-85-220.png/150x150bb.jpg",
+              "graphData": [
+                [
+                  1774137600,
+                  126,
+                  null
+                ]
+              ],
+              "chart_type": "topfreeipadapplications",
+              "category_name": "Games/Puzzle",
+              "todays_rank": 91
+            }
+          }
+        }
+      },
+      "lines": 1
+    }
+  },
+  {
+    "app_name": "Arrow Madness",
+    "date": "2026-03-22",
+    "platform": "android",
+    "device": "android",
+    "chart_type": "topselling_free",
+    "category": "game",
+    "category_name": "Game",
+    "app_ids": [
+      "com.arrow.madness.games.arrows.escape.puzzle.game"
+    ],
+    "rank": 503,
+    "raw_data": {
+      "com.arrow.madness.games.arrows.escape.puzzle.game": {
+        "US": {
+          "game": {
+            "topselling_free": {
+              "name": "Arrow Madness: Arrow Puzzle",
+              "humanized_app_name": "Arrow Madness",
+              "icon": "https://play-lh.googleusercontent.com/5zBzPy1EUYZWR9Moj0_EappkL42notU4yj722Hzox3au3PMueLIcdN-UIESj0M7NPEuryqy1sv_gNx4BEYRe=s150",
+              "graphData": [
+                [
+                  1774137600,
+                  573,
+                  null
+                ]
+              ],
+              "chart_type": "topselling_free",
+              "category_name": "Game",
+              "todays_rank": 503
+            }
+          }
+        }
+      },
+      "lines": 1
+    }
+  },
+  {
+    "app_name": "Arrow Madness",
+    "date": "2026-03-22",
+    "platform": "android",
+    "device": "android",
+    "chart_type": "topselling_free",
+    "category": "game_casual",
+    "category_name": "Game/Casual",
+    "app_ids": [
+      "com.arrow.madness.games.arrows.escape.puzzle.game"
+    ],
+    "rank": null,
+    "raw_data": {
+      "lines": 0
+    }
+  },
+  {
+    "app_name": "Arrow Madness",
+    "date": "2026-03-22",
+    "platform": "android",
+    "device": "android",
+    "chart_type": "topselling_free",
+    "category": "game_puzzle",
+    "category_name": "Game/Puzzle",
+    "app_ids": [
+      "com.arrow.madness.games.arrows.escape.puzzle.game"
+    ],
+    "rank": 143,
+    "raw_data": {
+      "com.arrow.madness.games.arrows.escape.puzzle.game": {
+        "US": {
+          "game_puzzle": {
+            "topselling_free": {
+              "name": "Arrow Madness: Arrow Puzzle",
+              "humanized_app_name": "Arrow Madness",
+              "icon": "https://play-lh.googleusercontent.com/5zBzPy1EUYZWR9Moj0_EappkL42notU4yj722Hzox3au3PMueLIcdN-UIESj0M7NPEuryqy1sv_gNx4BEYRe=s150",
+              "graphData": [
+                [
+                  1774137600,
+                  141,
+                  null
+                ]
+              ],
+              "chart_type": "topselling_free",
+              "category_name": "Puzzle",
+              "todays_rank": 143
+            }
+          }
+        }
+      },
+      "lines": 1
+    }
+  }
+]

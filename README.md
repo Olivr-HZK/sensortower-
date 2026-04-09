@@ -1,6 +1,6 @@
 # SensorTower 周报数据工作流
 
-基于 SensorTower API 与本地 SQLite 的**休闲游戏（Casual）Top100 周报流水线**：抓取榜单、异动、元数据、下载/收益、商店信息（通过 metadata 接口）、并支持 AI 生成 Top5 综述与下架检测。
+基于 SensorTower API 与本地 SQLite 的**休闲游戏（Casual）Top100 周报流水线**：抓取榜单、异动、元数据、下载/收益、商店信息（通过 metadata 接口）、并支持 AI 生成 Top5 综述与下架检测。另提供**我方产品**在美国区免费榜下的周环比检测（见下文「我方产品检测」）。
 
 ---
 
@@ -148,6 +148,54 @@ node scripts/fetch_us_free_metadata_and_compare.js --date 2026-03-02
 
 ---
 
+## 我方产品检测（US 免费榜周环比）
+
+针对在 `data/appid_us.json` 中登记的我方 App，按**美国区免费榜**下各品类/分榜维度做**周环比**排名（默认对比「上上周日 → 上周日」），结果写入本地 SQLite `data/us_free_appid_weekly.db`，并可推送飞书。该流程与上文「Casual Top100 周报」**独立并行**，同样需要 `SENSORTOWER_API_TOKEN`。
+
+### 数据与配置
+
+| 文件 / 库 | 说明 |
+|-----------|------|
+| `data/appid_us.json` | 我方产品清单（含 `apple_app_id`、`google_app_id`、产品编码等）；字段 `us_free_category_ranking_summary` 由步骤 1 脚本回写，供步骤 2 决定拉哪些免费榜维度 |
+| `data/us_free_appid_weekly.db` | 周环比排名结果（本地生成，默认不提交） |
+
+### 推荐工作流
+
+1. **刷新 US 免费榜品类摘要**（写入 `appid_us.json`）  
+   调用 `GET /v1/{os}/category/category_ranking_summary`，为每个产品记录在美国免费榜下出现的品类与分榜，避免盲查维度。  
+   ```bash
+   node scripts/fetch_us_free_category_ranking_summary.js
+   ```
+
+2. **周环比排名与简报**（写库 + 可选飞书）  
+   依据 `us_free_category_ranking_summary` 展开查询维度，用 `category_history` 批量拉取排名（与根目录 `arrow_madness_rank_parse.js` 解析逻辑一致）；若摘要为空则回退为 game / casual / board / card / puzzle 等维度组合。  
+   ```bash
+   node scripts/us_free_appid_weekly_rank_changes.js [DATE_NEW] [DATE_OLD]
+   npm run us-free-weekly
+   ```  
+   不传日期时，`DATE_NEW` 为「最近一个周日」、`DATE_OLD` 为其前一周同日。  
+   环境变量：`SENSORTOWER_API_TOKEN`（必填）；`FEISHU_WEBHOOK_URL`（推送时）；遇 API 频率限制（如 11232）脚本会退避重试。
+
+3. **（可选）仅重发飞书**  
+   ```bash
+   npm run us-free-weekly-feishu
+   # 或 node scripts/us_free_appid_weekly_rank_changes.js --feishu-only [DATE_NEW] [DATE_OLD]
+   ```
+
+4. **（可选）导出 US Casual 免费榜历史 CSV**  
+   对 `appid_us.json` 中全部产品拉取 US + Casual + 免费榜区间历史，输出 `output/app_ranks_us_casual.csv`。  
+   ```bash
+   node scripts/fetch_app_ranks_workflow.js 2026-03-22
+   ```
+
+5. **Arrow Madness 单产品管线（与历史脚本兼容）**  
+   根目录 `fetch_app_ranks.js`、`compare_and_summarize.js` 面向单游戏 `arrow_madness.db`；若需把该结果并入「我方产品」周报库（与 `appid_us.json` 中 G-058 / internal_name Arrow2 对齐），可执行：  
+   ```bash
+   npm run copy-arrow2-us-free
+   ```
+
+---
+
 ## 常用命令
 
 ```bash
@@ -165,6 +213,10 @@ node scripts/test_us_free_removed.js
 
 # DRYRUN：在临时数据库上完整跑一遍每周工作流（不影响正式库）
 node scripts/test_weekly_workflow_dryrun.js 2026-03-02
+
+# 我方产品 US 免费榜：先刷新 appid_us.json 摘要，再跑周环比（详见「我方产品检测」）
+node scripts/fetch_us_free_category_ranking_summary.js
+npm run us-free-weekly
 ```
 
 ---

@@ -14,9 +14,13 @@
     "top5-overview": "node scripts/generate_top5_overview.js",
     "compare-us-free-metadata": "node scripts/fetch_us_free_metadata_and_compare.js",
     "detect-removed": "node scripts/detect_removed_games.js",
-    "dryrun-weekly": "node scripts/test_weekly_workflow_dryrun.js"
+    "dryrun-weekly": "node scripts/test_weekly_workflow_dryrun.js",
+    "us-free-weekly": "node scripts/us_free_appid_weekly_rank_changes.js",
+    "us-free-weekly-feishu": "node scripts/us_free_appid_weekly_rank_changes.js --feishu-only",
+    "copy-arrow2-us-free": "node scripts/copy_arrow_madness_to_us_free_weekly.js"
   },
   "dependencies": {
-    "playwright": "^1.58.1"
+    "playwright": "^1.58.1",
+    "sql.js": "^1.14.1"
   }
 }

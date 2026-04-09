@@ -1,0 +1,128 @@
+[
+  {
+    "app_name": "Arrow Madness",
+    "country": "US",
+    "rank_date": "2026-03-09",
+    "platform": "ios",
+    "device": "iphone",
+    "chart_type": "topfreeapplications",
+    "category": "6014",
+    "category_name": "Games",
+    "app_ids": [
+      "6756872090"
+    ],
+    "rank": 447
+  },
+  {
+    "app_name": "Arrow Madness",
+    "country": "US",
+    "rank_date": "2026-03-09",
+    "platform": "ios",
+    "device": "iphone",
+    "chart_type": "topfreeapplications",
+    "category": "7003",
+    "category_name": "Games/Casual",
+    "app_ids": [
+      "6756872090"
+    ],
+    "rank": 286
+  },
+  {
+    "app_name": "Arrow Madness",
+    "country": "US",
+    "rank_date": "2026-03-09",
+    "platform": "ios",
+    "device": "iphone",
+    "chart_type": "topfreeapplications",
+    "category": "7012",
+    "category_name": "Games/Puzzle",
+    "app_ids": [
+      "6756872090"
+    ],
+    "rank": 242
+  },
+  {
+    "app_name": "Arrow Madness",
+    "country": "US",
+    "rank_date": "2026-03-09",
+    "platform": "ios",
+    "device": "ipad",
+    "chart_type": "topfreeipadapplications",
+    "category": "6014",
+    "category_name": "Games",
+    "app_ids": [
+      "6756872090"
+    ],
+    "rank": 236
+  },
+  {
+    "app_name": "Arrow Madness",
+    "country": "US",
+    "rank_date": "2026-03-09",
+    "platform": "ios",
+    "device": "ipad",
+    "chart_type": "topfreeipadapplications",
+    "category": "7003",
+    "category_name": "Games/Casual",
+    "app_ids": [
+      "6756872090"
+    ],
+    "rank": 119
+  },
+  {
+    "app_name": "Arrow Madness",
+    "country": "US",
+    "rank_date": "2026-03-09",
+    "platform": "ios",
+    "device": "ipad",
+    "chart_type": "topfreeipadapplications",
+    "category": "7012",
+    "category_name": "Games/Puzzle",
+    "app_ids": [
+      "6756872090"
+    ],
+    "rank": 91
+  },
+  {
+    "app_name": "Arrow Madness",
+    "country": "US",
+    "rank_date": "2026-03-09",
+    "platform": "android",
+    "device": "android",
+    "chart_type": "topselling_free",
+    "category": "game",
+    "category_name": "Game",
+    "app_ids": [
+      "com.arrow.madness.games.arrows.escape.puzzle.game"
+    ],
+    "rank": null
+  },
+  {
+    "app_name": "Arrow Madness",
+    "country": "US",
+    "rank_date": "2026-03-09",
+    "platform": "android",
+    "device": "android",
+    "chart_type": "topselling_free",
+    "category": "game_casual",
+    "category_name": "Game/Casual",
+    "app_ids": [
+      "com.arrow.madness.games.arrows.escape.puzzle.game"
+    ],
+    "rank": null
+  },
+  {
+    "app_name": "Arrow Madness",
+    "country": "US",
+    "rank_date": "2026-03-09",
+    "platform": "android",
+    "device": "android",
+    "chart_type": "topselling_free",
+    "category": "game_puzzle",
+    "category_name": "Game/Puzzle",
+    "app_ids": [
+      "com.arrow.madness.games.arrows.escape.puzzle.game"
+    ],
+    "rank": 143
+  }
+]
