@@ -10,6 +10,7 @@
     "workflow-week": "node scripts/workflow_week_rank_changes.js",
     "weekly-automated": "node scripts/weekly_automated_workflow.js",
     "setup-cron": "bash scripts/setup_cron.sh",
+    "setup-us-free-daily-cron": "bash scripts/setup_us_free_daily_cron.sh",
     "update-app-names": "node scripts/update_app_names_from_metadata.js",
     "top5-overview": "node scripts/generate_top5_overview.js",
     "compare-us-free-metadata": "node scripts/fetch_us_free_metadata_and_compare.js",
@@ -17,6 +18,10 @@
     "dryrun-weekly": "node scripts/test_weekly_workflow_dryrun.js",
     "us-free-weekly": "node scripts/us_free_appid_weekly_rank_changes.js",
     "us-free-weekly-feishu": "node scripts/us_free_appid_weekly_rank_changes.js --feishu-only",
+    "us-free-weekly-wework": "node scripts/us_free_appid_weekly_rank_changes.js --send-wework",
+    "us-free-daily": "node scripts/us_free_appid_weekly_rank_changes.js --daily --no-competitors",
+    "us-free-daily-feishu": "node scripts/us_free_appid_weekly_rank_changes.js --daily --no-competitors --feishu-only",
+    "us-free-daily-wework": "node scripts/us_free_appid_weekly_rank_changes.js --daily --no-competitors --wework-only",
     "copy-arrow2-us-free": "node scripts/copy_arrow_madness_to_us_free_weekly.js"
   },
   "dependencies": {

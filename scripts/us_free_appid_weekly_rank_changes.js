@@ -1,24 +1,39 @@
 #!/usr/bin/env node
 /**
  * 依据 data/appid_us.json 中 us_free_category_ranking_summary 的免费榜维度；
- * 可选 competitors：[{ name, apple_app_id?, google_app_id? }] 与本品共用同一套 summary 榜单维度，仅 app id 不同；飞书折叠内竞品默认只展开「游戏总榜」行，其余分榜在内层 collapsible_panel。
+ * 可选 competitors：[{ name, apple_app_id?, google_app_id? }] 与本品共用同一套 summary 榜单维度，仅 app id 不同；飞书默认每个竞品嵌套在本品 collapsible_panel 内；**`--only-product` 单条推送**时竞品改为与本品**平级**的独立折叠块。正文均一致（备注 + 快捷链接 + 各维度排名）。
  * 可选字段 us_free_weekly_note（如「游戏总榜」）会写入本地简报「备注」行及飞书折叠块首行。
  * 用 category_history（与 Arrow Madness 相同）拉取「上上周日 vs 上周日」排名，写入独立 SQLite；
  * API 拉取按「同 os+device+category+chart_type」合并 app_ids，每批最多 30 个（见 scripts/test_category_history_batch_params.js）；
  * 若 summary 中没有任何维度，则对 game / casual / board / card / puzzle 五类各查一遍（iPhone+iPad+Android），
  * 并推送飞书（样式对齐 compare_and_summarize）。
  *
- * 用法：
- *   node scripts/us_free_appid_weekly_rank_changes.js [DATE_NEW] [DATE_OLD]
+ * 用法（**默认仅日报总结**；周报已弱化，需显式 `--weekly`）：
+ *   node scripts/us_free_appid_weekly_rank_changes.js
+ *   node scripts/us_free_appid_weekly_rank_changes.js --weekly [DATE_NEW] [DATE_OLD]   # 周报（双消息等，暂少用）
+ *   node scripts/us_free_appid_weekly_rank_changes.js [DATE_NEW] [DATE_OLD]          # 与默认相同：日报
  *   node scripts/us_free_appid_weekly_rank_changes.js --no-feishu
+ *   node scripts/us_free_appid_weekly_rank_changes.js --no-wework
  *   node scripts/us_free_appid_weekly_rank_changes.js --feishu-only [DATE_NEW] [DATE_OLD]
+ *   node scripts/us_free_appid_weekly_rank_changes.js --wework-only [DATE_NEW] [DATE_OLD]
+ *   node scripts/us_free_appid_weekly_rank_changes.js --send-wework [DATE_NEW] [DATE_OLD]
+ *   （与 --wework-only 等价，另支持别名 --wecom-only）
  *   node scripts/us_free_appid_weekly_rank_changes.js --verify-urls
+ *   node scripts/us_free_appid_weekly_rank_changes.js --only-product <internal_name>
+ *     仅本品 + 其竞品（与 appid_us.json 的 internal_name 完全一致）；飞书**只发一条**（仅折叠明细，无总结）；企微不发顶部游戏总榜摘要段落。
+ *   node scripts/us_free_appid_weekly_rank_changes.js --weekly --summary-only
+ *     与 `--weekly` 同用：飞书 / 企微**只发周报总结**，不发「单独」明细。
+ *   node scripts/us_free_appid_weekly_rank_changes.js --compare-table
+ *     与 `--only-product` 等组合：有竞品时横向对比本品与各竞品（**飞书单卡**用开放平台 **table 组件**；多产品折叠块内因平台限制仍用 Markdown 表；企微仍为 Markdown；无竞品则仍为折叠/列表）。
+ *   node scripts/us_free_appid_weekly_rank_changes.js --no-competitors
+ *     日报（默认）下跳过竞品维度；日环比仍由 `US_FREE_DAILY_CALENDAR_TZ` 决定。
  *
- * 环境：SENSORTOWER_API_TOKEN（全量拉数）、FEISHU_WEBHOOK_URL（推送时）；
+ * 环境：SENSORTOWER_API_TOKEN（全量拉数）、FEISHU_WEBHOOK_URL（飞书推送）、WEWORK_WEBHOOK_URL（企业微信机器人 markdown）；
+ *       WEWORK_MARKDOWN_MAX_BYTES（可选，单条正文切分上限，默认 3800 字节，含序号后须 ≤4096）；
  *       SENSORTOWER_OVERVIEW_BASE（默认 https://app.sensortower-china.com）、
  *       ST_CHINA_OVERVIEW_PARENT_ID（可选，overview 路径中的 project_id）
  *       FEISHU_RANK_DETAIL_EXPANDED=1（可选，排名明细折叠面板默认展开；默认折叠）
- * 飞书：顶部摘要与折叠标题在游戏名后接（ios/android 环比）；iPad 仅在正文明细；在榜指前500；分榜明细按首字母、collapsible_panel（需飞书 ≥7.9）。
+ * 飞书：**默认日报**一条「日总结」卡（`buildFeishuDailySummaryCard`，无 note 页脚）。传 `--weekly` 时仍为总结+单独两条。`--only-product` 等为专项推送。折叠明细需 collapsible_panel（飞书 ≥7.9）。
  * 遇 11232 频率限制则退避重试。
  */
 
@@ -44,6 +59,104 @@ const MAX_RETRIES = 6;
 const BETWEEN_QUERIES_MS = 450;
 /** 与 docs/API_DOCUMENTATION.md 一致：category_history 单请求最多约 30 个 app_id */
 const CATEGORY_HISTORY_APP_IDS_BATCH = 30;
+
+/** 仅推送企业微信；`--send-wework` / `--wecom-only` 与 `--wework-only` 等价 */
+const ARG_WEEWORK_ONLY = new Set(["--wework-only", "--send-wework", "--wecom-only"]);
+
+function argvHasWeworkOnly() {
+  return process.argv.some((a) => ARG_WEEWORK_ONLY.has(a));
+}
+
+/**
+ * @returns {{ noFeishu: boolean, noWework: boolean, feishuOnly: boolean, weworkOnly: boolean, daily: boolean, weekly: boolean, noCompetitors: boolean, onlyProduct: string|null, compareTable: boolean, summaryOnly: boolean, rest: string[] }}
+ */
+function parseRunFlags(argv) {
+  const o = {
+    noFeishu: false,
+    noWework: false,
+    feishuOnly: false,
+    weworkOnly: false,
+    daily: false,
+    weekly: false,
+    noCompetitors: false,
+    onlyProduct: null,
+    compareTable: false,
+    summaryOnly: false,
+    rest: [],
+  };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--no-feishu") o.noFeishu = true;
+    else if (a === "--no-wework") o.noWework = true;
+    else if (a === "--feishu-only") o.feishuOnly = true;
+    else if (ARG_WEEWORK_ONLY.has(a)) o.weworkOnly = true;
+    else if (a === "--daily") o.daily = true;
+    else if (a === "--weekly") o.weekly = true;
+    else if (a === "--no-competitors") o.noCompetitors = true;
+    else if (a === "--compare-table") o.compareTable = true;
+    else if (a === "--summary-only") o.summaryOnly = true;
+    else if (a === "--only-product") {
+      const v = argv[i + 1];
+      if (v && !String(v).startsWith("--")) {
+        o.onlyProduct = String(v).trim();
+        i++;
+      }
+    } else o.rest.push(a);
+  }
+  if (o.weekly) {
+    o.daily = false;
+  } else if (!o.daily) {
+    o.daily = true;
+  }
+  return o;
+}
+
+/** 某时区「今天」的日历日 YYYY-MM-DD（默认美西，与 US 商店日对齐；可用 US_FREE_DAILY_CALENDAR_TZ 覆盖） */
+function calendarDateYMDInTz(timeZone, date = new Date()) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
+
+function getDefaultDailyDateRange() {
+  const tz = String(process.env.US_FREE_DAILY_CALENDAR_TZ || "America/Los_Angeles").trim() || "America/Los_Angeles";
+  const today = calendarDateYMDInTz(tz);
+  const dateNew = addDays(today, -1);
+  const dateOld = addDays(dateNew, -1);
+  return { dateOld, dateNew, tz };
+}
+
+/**
+ * @param {string[]} restArgs 已去掉 flag 的 argv
+ * @param {{ daily: boolean }} opts
+ */
+function resolveDateRangeFromArgs(restArgs, opts) {
+  const daily = !!(opts && opts.daily);
+  if (restArgs[0] && /^\d{4}-\d{2}-\d{2}$/.test(restArgs[0])) {
+    const DATE_NEW = restArgs[0];
+    const DATE_OLD =
+      restArgs[1] && /^\d{4}-\d{2}-\d{2}$/.test(restArgs[1])
+        ? restArgs[1]
+        : daily
+          ? addDays(DATE_NEW, -1)
+          : addDays(DATE_NEW, -7);
+    return { DATE_OLD, DATE_NEW };
+  }
+  if (daily) {
+    const { dateOld, dateNew } = getDefaultDailyDateRange();
+    return { DATE_OLD: dateOld, DATE_NEW: dateNew };
+  }
+  const DATE_NEW = getLastSunday();
+  const DATE_OLD = addDays(DATE_NEW, -7);
+  return { DATE_OLD, DATE_NEW };
+}
+
+function reportKindFromFlags(flags) {
+  return flags.weekly ? "weekly" : "daily";
+}
 
 function loadEnv(filePath) {
   if (!fs.existsSync(filePath)) return;
@@ -110,7 +223,7 @@ function formatRankCompactLine(q, o, n) {
 }
 
 /**
- * 飞书折叠明细：两周名次 + 名次差；名次变小（变好）红，名次变大（变差）绿（diff = 旧 − 新）
+ * 飞书折叠明细：两周名次 + 名次差；diff=旧−新，>0 红（+），<0 绿（−）（名次数字变小为榜单更靠前）
  */
 function formatRankCompactLineFeishu(q, o, n) {
   const label = rankCompactLabel(q);
@@ -279,8 +392,10 @@ function pushQueriesFromSummary(subject, sum, out) {
 /**
  * 从 appid_us 一条记录展开为若干 q（优先 summary 中已有免费榜维度；若一条都没有则查 game/casual/board/card/puzzle 五类）。
  * 可选 competitors[]：与本品共用同一套 summary 维度，仅替换 apple_app_id / google_app_id；internal_name 为「本品名·竞品·竞品名」。
+ * @param {{ skipCompetitors?: boolean }} [opts] skipCompetitors 为 true 时（如 `--daily`）不展开竞品。
  */
-function expandQueriesForApp(row) {
+function expandQueriesForApp(row, opts) {
+  const skipCompetitors = !!(opts && opts.skipCompetitors);
   const sum = row.us_free_category_ranking_summary;
   if (!sum || sum.country !== "US") return [];
 
@@ -301,6 +416,8 @@ function expandQueriesForApp(row) {
   if (out.length === 0) {
     pushFallbackQueriesForSubject(selfSubject, sum, out);
   }
+
+  if (skipCompetitors) return out;
 
   const comps = Array.isArray(row.competitors) ? row.competitors : [];
   for (const comp of comps) {
@@ -395,6 +512,136 @@ function stripHtmlTags(s) {
   return String(s).replace(/<[^>]+>/g, "");
 }
 
+/** 企业微信 markdown：标题前按产品 key 哈希取 emoji（约 70+ 种），区分不同产品；不再使用 <font> 着色。 */
+const WEWORK_TITLE_EMOJI_PALETTE = [
+  "🔴",
+  "🟠",
+  "🟡",
+  "🟢",
+  "🔵",
+  "🟣",
+  "🟤",
+  "⚫",
+  "⚪",
+  "🟥",
+  "🟧",
+  "🟨",
+  "🟩",
+  "🟦",
+  "🟪",
+  "🟫",
+  "⬛",
+  "⬜",
+  "💙",
+  "💚",
+  "💛",
+  "🧡",
+  "❤",
+  "💜",
+  "🖤",
+  "🤍",
+  "🤎",
+  "🍎",
+  "🍊",
+  "🍋",
+  "🍏",
+  "🍇",
+  "🍉",
+  "🍓",
+  "🍑",
+  "🍒",
+  "🫐",
+  "🎮",
+  "🎯",
+  "🎲",
+  "🎪",
+  "🎨",
+  "🧩",
+  "📱",
+  "💎",
+  "⭐",
+  "🌟",
+  "🔥",
+  "💧",
+  "🌈",
+  "🦄",
+  "🐻",
+  "🐼",
+  "🐸",
+  "🦁",
+  "🐯",
+  "🐮",
+  "🦊",
+  "🐰",
+  "🐹",
+  "🐭",
+  "🐱",
+  "🐶",
+  "🐷",
+  "🐵",
+  "🐔",
+  "🐧",
+  "🦆",
+  "🦅",
+  "🦉",
+  "🐺",
+  "🐗",
+  "🐴",
+  "🐝",
+  "🦋",
+  "🐛",
+  "🐌",
+];
+
+function hashStringToUint(str) {
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+function weworkTitleEmojiForKey(key) {
+  const k = String(key);
+  const h = hashStringToUint(k);
+  const idx = h % WEWORK_TITLE_EMOJI_PALETTE.length;
+  return WEWORK_TITLE_EMOJI_PALETTE[idx];
+}
+
+function gameColorKeyForBlock(block) {
+  const ids = block.ids || {};
+  return `p|${block.internalName || ""}|${block.productCode || ""}|${ids.apple_app_id || ""}|${ids.google_app_id || ""}`;
+}
+
+function gameColorKeyForCompetitor(c) {
+  const ids = c.ids || {};
+  return `c|${c.internalName || ""}|${linkTitleForProduct(c)}|${ids.apple_app_id || ""}|${ids.google_app_id || ""}`;
+}
+
+/** 企业微信：分榜明细 ### / #### = emoji 前缀 + 标题（正文不重复游戏名） */
+function formatWeWorkMarkdownH3Product(block, titleOpts) {
+  const key = gameColorKeyForBlock(block);
+  const t = feishuPanelTitleFromProduct(block, titleOpts);
+  const emoji = weworkTitleEmojiForKey(key);
+  return `### ${emoji} ${t}`;
+}
+
+/** 单产品推送时与本品同级（###），全量周报时竞品为 #### 缩进在本品下 */
+function formatWeWorkMarkdownH3Competitor(c) {
+  const key = gameColorKeyForCompetitor(c);
+  const t = feishuCompetitorPanelTitle(c);
+  const emoji = weworkTitleEmojiForKey(key);
+  return `### ${emoji} ${t}`;
+}
+
+function formatWeWorkMarkdownH4Competitor(c) {
+  const key = gameColorKeyForCompetitor(c);
+  const t = feishuCompetitorPanelTitle(c);
+  const emoji = weworkTitleEmojiForKey(key);
+  return `#### ${emoji} ${t}`;
+}
+
 function compactDisplayRankLines(lines) {
   if (!lines || lines.length === 0) return [];
   const allUnlisted = lines.every((ln) => RE_LINE_UNLISTED_FLAT.test(stripHtmlTags(ln)));
@@ -441,6 +688,45 @@ function formatIntroRankPair(o, n) {
   return `${formatIntroRankToken(o)}→${formatIntroRankToken(n)}`;
 }
 
+/** 与 formatRankCompactLineFeishu 一致：旧 − 新；仅两端均为数字时有效 */
+function introRankDiffOldMinusNew(o, n) {
+  if (o == null || n == null) return null;
+  const a = Number(o);
+  const b = Number(n);
+  if (Number.isNaN(a) || Number.isNaN(b)) return null;
+  return a - b;
+}
+
+/** 飞书 Markdown：红（+）/绿（−）对应 diff=旧−新 正负，与明细一致 */
+function formatIntroRankPairWithAbsFeishu(o, n) {
+  const pair = formatIntroRankPair(o, n);
+  const diff = introRankDiffOldMinusNew(o, n);
+  if (diff == null || diff === 0) return pair;
+  const paren = diff > 0 ? `+${diff}` : `${diff}`;
+  const bracket = `（${paren}）`;
+  const colored =
+    diff > 0 ? `<font color='red'>${bracket}</font>` : `<font color='green'>${bracket}</font>`;
+  return `${pair}${colored}`;
+}
+
+/** 折叠标题 plain_text：无 HTML，仅 +/− 与数值 */
+function formatIntroRankPairWithAbsPlain(o, n) {
+  const pair = formatIntroRankPair(o, n);
+  const diff = introRankDiffOldMinusNew(o, n);
+  if (diff == null || diff === 0) return pair;
+  const paren = diff > 0 ? `+${diff}` : `${diff}`;
+  return `${pair}（${paren}）`;
+}
+
+/** 企业微信 Markdown：无 font 标签，仅（+25）/（-25） */
+function formatIntroRankPairWithAbsWework(o, n) {
+  const pair = formatIntroRankPair(o, n);
+  const diff = introRankDiffOldMinusNew(o, n);
+  if (diff == null || diff === 0) return pair;
+  const paren = diff > 0 ? `+${diff}` : `${diff}`;
+  return `${pair}（${paren}）`;
+}
+
 function sortIntroEntriesByPlatform(entries) {
   return [...entries].sort(
     (a, b) =>
@@ -449,30 +735,70 @@ function sortIntroEntriesByPlatform(entries) {
   );
 }
 
-/**
- * 游戏名后全角括号：仅 **ios / android** 游戏总榜环比（不含 iPad；iPad 见下方明细）
- */
-function buildIosAndroidGameTotalParen(block) {
+/** 摘要分块：上升 / 下降（与 formatRankCompactLineFeishu 同向：diff=旧−新） */
+function introRankDirectionForSummary(o, n) {
+  if (o == null && n == null) return null;
+  if (o == null && n != null) return "up";
+  if (o != null && n == null) return "down";
+  const diff = introRankDiffOldMinusNew(o, n);
+  if (diff == null || diff === 0 || Number.isNaN(diff)) return null;
+  return diff > 0 ? "up" : "down";
+}
+
+/** 游戏总榜摘要：含 iPhone / Android / iPad 三端变化条目 */
+function getGameTotalChangedEntriesForIntro(block) {
   const entries = (block.rankEntries || []).filter((e) => isGameTotalBoardQuery(e.q));
   const changed = entries.filter((e) => introGameEntryHasChange(e.oldRank, e.newRank));
-  const iosAndroid = changed.filter((e) => {
+  return changed.filter((e) => {
     const t = introPlatformTag(e.q);
-    return t === "ios" || t === "android";
+    return t === "ios" || t === "android" || t === "ipad";
   });
-  const sorted = sortIntroEntriesByPlatform(iosAndroid);
-  if (sorted.length === 0) return "";
-  const parts = sorted.map(
-    (e) => `${introPlatformTag(e.q)} ${formatIntroRankPair(e.oldRank, e.newRank)}`,
-  );
+}
+
+/**
+ * 由已筛好的 rankEntry 列表拼游戏总榜括号（ios / android / iPad）
+ * @param {{ plainText?: boolean, htmlColors?: boolean }} [opts] htmlColors=false 时为企业微信（无 font）
+ */
+function buildIosAndroidParenFromEntries(entries, opts) {
+  if (!entries || !entries.length) return "";
+  const plainText = opts && opts.plainText;
+  const htmlColors = opts && opts.htmlColors !== false && !plainText;
+  let fmt;
+  if (plainText) fmt = formatIntroRankPairWithAbsPlain;
+  else if (htmlColors) fmt = formatIntroRankPairWithAbsFeishu;
+  else fmt = formatIntroRankPairWithAbsWework;
+  const sorted = sortIntroEntriesByPlatform(entries);
+  const parts = sorted.map((e) => `${introPlatformTag(e.q)} ${fmt(e.oldRank, e.newRank)}`);
   return `（${parts.join("，")}）`;
 }
 
-/** 顶部摘要是否展示：仅当 ios 或 android 游戏总榜有变化（仅 iPad 变化不进摘要） */
-function productHasIosAndroidGameTotalChange(block) {
+/**
+ * @param {{ weWorkIntro?: boolean }} [opts] 企微日报：用「•」+ 链接内不加粗，避免列表/加粗被渲染成「下划线」观感
+ */
+function buildIntroProductHeadLine(block, opts) {
+  const name = linkTitleForProduct(block);
+  const st = sensorTowerUrlForIds(block.ids || {}, opts && opts.weWorkIntro ? { omitProjectId: true } : undefined);
+  const label = escapeMdLinkLabel(name);
+  if (opts && opts.weWorkIntro) {
+    return st ? `• [${label}](${st})` : `• ${label}`;
+  }
+  return st ? `- [**${label}**](${st})` : `- **${label}**`;
+}
+
+/**
+ * 游戏名后全角括号：**ios / android / iPad** 游戏总榜环比（与总结一致）
+ * @param {{ plainText?: boolean, htmlColors?: boolean }} [opts] 折叠标题 plain_text 时 true（无颜色标签，仅 +/−）
+ */
+function buildIosAndroidGameTotalParen(block, opts) {
+  return buildIosAndroidParenFromEntries(getGameTotalChangedEntriesForIntro(block), opts);
+}
+
+/** 顶部摘要是否展示：ios / android / iPad 任一端游戏总榜有变化即展示 */
+function productHasGameTotalIntroChange(block) {
   const entries = (block.rankEntries || []).filter((e) => isGameTotalBoardQuery(e.q));
   return entries.some((e) => {
     const t = introPlatformTag(e.q);
-    if (t !== "ios" && t !== "android") return false;
+    if (t !== "ios" && t !== "android" && t !== "ipad") return false;
     return introGameEntryHasChange(e.oldRank, e.newRank);
   });
 }
@@ -526,6 +852,22 @@ function mergeCompetitorBlocksIntoParents(blocks) {
   return parents.concat(orphans);
 }
 
+/** 仅保留指定本品块（含已并入的 competitorPanels）；internal_name 须与 appid_us 一致 */
+function filterMergedBlocksToSingleProduct(blocks, internalName) {
+  const needle = String(internalName || "").trim();
+  if (!needle || !blocks || !blocks.length) return blocks;
+  const parent = blocks.find(
+    (b) => !RE_COMPETITOR_INTERNAL.test(String(b.internalName || "")) && String(b.internalName || "").trim() === needle,
+  );
+  if (parent) return [parent];
+  const fuzzy = blocks.find(
+    (b) =>
+      !RE_COMPETITOR_INTERNAL.test(String(b.internalName || "")) &&
+      String(b.internalName || "").includes(needle),
+  );
+  return fuzzy ? [fuzzy] : [];
+}
+
 /** 按 rankEntries 与 isGameTotalBoardQuery 拆成游戏总榜行 vs 其余分榜行 */
 function partitionRankLinesByGameTotal(block) {
   const entries = block.rankEntries || [];
@@ -548,43 +890,13 @@ function partitionRankLinesByGameTotal(block) {
 }
 
 /**
- * 竞品：默认只展示游戏总榜；其余分榜放入内层折叠。
- * @param {{ titleInPanel?: boolean }} [opts] 为 true 时外层 collapsible 标题已含「竞品·名」，正文不再重复大标题
+ * 折叠块内 Markdown：备注 + 快捷链接 + 各维度排名（本品与竞品同一套；游戏名仅在折叠标题 / 企业微信 ### 行出现一次）
  */
-function buildCompetitorGameTotalMarkdown(c, opts) {
-  const titleInPanel = opts && opts.titleInPanel;
-  const ids = c.ids || {};
-  const st = sensorTowerUrlForIds(ids);
-  const linkLabel = linkTitleForProduct(c);
-  const parts = [];
-  if (st) parts.push(`[${escapeMdLinkLabel(linkLabel)}](${st})`);
-  else parts.push(escapeMdLinkLabel(linkLabel));
-  if (ids.apple_app_id) parts.push(`[前往 Apple Store](${appleStoreUrl(ids.apple_app_id)})`);
-  if (ids.google_app_id) parts.push(`[前往 Google Play](${googlePlayUrl(ids.google_app_id)})`);
-  const headerMd = parts.join("  ");
-  const { totalF } = partitionRankLinesByGameTotal(c);
-  const lines = compactDisplayRankLines(totalF);
-  const body = lines.join("\n");
-  const linkBlock = `**快捷链接** · ${headerMd}`;
-  const head = titleInPanel
-    ? linkBlock
-    : `**竞品 · ${escapeMdLinkLabel(linkLabel)}**\n\n${linkBlock}`;
-  if (body) return `${head}\n\n**游戏总榜（各端）**\n${body}`;
-  return `${head}\n\n**游戏总榜（各端）**\n（无）`;
-}
-
-function buildCompetitorRestMarkdown(c) {
-  const { restF } = partitionRankLinesByGameTotal(c);
-  const lines = compactDisplayRankLines(restF);
-  const body = lines.join("\n");
-  if (!body) return "";
-  return `**各维度排名（非游戏总榜）**\n${body}`;
-}
-
-/** 折叠块内 Markdown：备注 + 快捷链接 + 各维度排名（本品与竞品复用） */
-function buildRankPanelMarkdownBody(block) {
+function buildRankPanelMarkdownBody(block, opts) {
+  const channel = (opts && opts.channel) || "feishu";
+  const weworkStrip = channel === "wework";
   const ids = block.ids || {};
-  const st = sensorTowerUrlForIds(ids);
+  const st = sensorTowerUrlForIds(ids, weworkStrip ? { omitProjectId: true } : undefined);
   const linkLabel = linkTitleForProduct(block);
   const parts = [];
   if (st) {
@@ -598,7 +910,8 @@ function buildRankPanelMarkdownBody(block) {
   const noteLine = block.weeklySummaryNote
     ? `**备注** · ${block.weeklySummaryNote}\n\n`
     : "";
-  const lines = compactDisplayRankLines(block.rankLines || []);
+  let lines = compactDisplayRankLines(block.rankLines || []);
+  if (weworkStrip) lines = lines.map((ln) => stripHtmlTags(ln));
   const body = lines.join("\n");
   if (body) {
     return `${noteLine}**快捷链接** · ${headerMd}\n\n**各维度排名**\n${body}`;
@@ -606,25 +919,320 @@ function buildRankPanelMarkdownBody(block) {
   return `${noteLine}**快捷链接** · ${headerMd}`;
 }
 
-function buildTotalBoardChangedIntroMarkdown(productBlocks) {
-  const qual = productBlocks.filter((b) => productHasIosAndroidGameTotalChange(b));
+/** 同一榜单维度在不同 app 间对齐（不含 internal_name / app_id） */
+function queryDimensionKey(q) {
+  if (!q) return "";
+  const ct = q.chart_type_ids && q.chart_type_ids[0] != null ? String(q.chart_type_ids[0]) : "";
+  return `${q.os}|${q.device}|${q.category}|${ct}`;
+}
+
+function buildRankEntryMap(block) {
+  const m = new Map();
+  for (const e of block.rankEntries || []) {
+    m.set(queryDimensionKey(e.q), e);
+  }
+  return m;
+}
+
+function mdTableCell(s) {
+  return String(s == null ? "" : s).replace(/\|/g, "｜").replace(/\r?\n/g, " ");
+}
+
+function formatRankTableCellFeishu(o, n) {
+  if (o == null && n == null) return "未上榜-未上榜";
+  if (o == null && n != null) return `未上榜-${n}`;
+  if (o != null && n == null) return `${o}-未上榜`;
+  if (o === n) return `${o}-${n}`;
+  const diff = o - n;
+  const paren = diff > 0 ? `+${diff}` : `${diff}`;
+  const colored = diff > 0 ? `<font color='red'>${paren}</font>` : `<font color='green'>${paren}</font>`;
+  return `${o}-${n}（${colored}）`;
+}
+
+function formatRankTableCellWeWork(o, n) {
+  if (o == null && n == null) return "未上榜-未上榜";
+  if (o == null && n != null) return `未上榜-${n}`;
+  if (o != null && n == null) return `${o}-未上榜`;
+  if (o === n) return `${o}-${n}`;
+  const diff = o - n;
+  const paren = diff > 0 ? `+${diff}` : `${diff}`;
+  return `${o}-${n}（${paren}）`;
+}
+
+/**
+ * 本品 + 竞品：行=榜单维度，列=各 app；单元格为「旧-新（差）」
+ * @param {{ channel?: 'feishu'|'wework' }} [opts]
+ */
+function buildRankComparisonTableMarkdown(block, opts) {
+  const channel = (opts && opts.channel) || "feishu";
+  const fmt = channel === "wework" ? formatRankTableCellWeWork : formatRankTableCellFeishu;
+  const cols = [block, ...(block.competitorPanels || [])];
+  const maps = cols.map((b) => buildRankEntryMap(b));
+  const parentEntries = block.rankEntries || [];
+  if (parentEntries.length === 0) return "（无维度数据）";
+  const headNames = cols.map((c) => mdTableCell(linkTitleForProduct(c)));
+  const lines = [];
+  lines.push(`| ${mdTableCell("维度")} | ${headNames.join(" | ")} |`);
+  lines.push(`| ${["---", ...cols.map(() => "---")].join(" | ")} |`);
+  for (const e of parentEntries) {
+    const dk = queryDimensionKey(e.q);
+    const rowLabel = rankCompactLabel(e.q);
+    const cells = [];
+    for (let i = 0; i < cols.length; i++) {
+      const ent = i === 0 ? e : maps[i].get(dk);
+      const o = ent ? ent.oldRank : null;
+      const n = ent ? ent.newRank : null;
+      cells.push(mdTableCell(fmt(o, n)));
+    }
+    lines.push(`| ${mdTableCell(rowLabel)} | ${cells.join(" | ")} |`);
+  }
+  return lines.join("\n");
+}
+
+function buildProductQuickLinksLine(block, isMain, stUrlOpts) {
+  const ids = block.ids || {};
+  const st = sensorTowerUrlForIds(ids, stUrlOpts);
+  const name = linkTitleForProduct(block);
+  const parts = [];
+  if (st) parts.push(`[${escapeMdLinkLabel(name)}](${st})`);
+  else parts.push(escapeMdLinkLabel(name));
+  if (ids.apple_app_id) parts.push(`[Apple](${appleStoreUrl(ids.apple_app_id)})`);
+  if (ids.google_app_id) parts.push(`[Google](${googlePlayUrl(ids.google_app_id)})`);
+  const role = isMain ? "本品" : "竞品";
+  return `- **${role}** · ${parts.join("  ")}`;
+}
+
+function buildCompareTableLinksSection(block, opts) {
+  const stUrlOpts = opts && opts.wework ? { omitProjectId: true } : undefined;
+  const out = [buildProductQuickLinksLine(block, true, stUrlOpts)];
+  for (const c of block.competitorPanels || []) {
+    out.push(buildProductQuickLinksLine(c, false, stUrlOpts));
+  }
+  return out.join("\n");
+}
+
+/** 对比表卡片：说明与链接（不含表格；表格用根级 `tag:table` 组件，见 buildFeishuRankComparisonTableElement） */
+function buildFeishuCompareTableIntroMarkdown(block, dateOld, dateNew) {
+  const lines = [];
+  if (block.weeklySummaryNote) {
+    lines.push(`**备注** · ${block.weeklySummaryNote}`);
+    lines.push("");
+  }
+  lines.push(
+    "**📍 美国 US** · 免费榜（iPhone / iPad / Android）",
+    "",
+    `**环比** · ${dateOld} → ${dateNew}`,
+    "",
+    "**快捷链接**",
+    buildCompareTableLinksSection(block),
+    "",
+    "**产品与竞品对比**（飞书表格组件；首列冻结；单元格为旧名次-新名次，括号内为名次差；需客户端 ≥7.4）",
+  );
+  return lines.join("\n");
+}
+
+/**
+ * 飞书卡片根级表格组件（JSON 1.0）。不可放在 collapsible_panel 内，故多产品折叠块仍用 Markdown 表。
+ * @see https://open.feishu.cn/document/feishu-cards/card-components/content-components/table
+ */
+function truncateFeishuTableHeader(s, maxLen) {
+  const t = String(s || "").trim();
+  if (t.length <= maxLen) return t;
+  return `${t.slice(0, Math.max(1, maxLen - 1))}…`;
+}
+
+function feishuPlainTableCellText(s) {
+  return String(s == null ? "" : s).replace(/\r?\n/g, " ");
+}
+
+function buildFeishuRankComparisonTableElement(block) {
+  const cols = [block, ...(block.competitorPanels || [])];
+  const maps = cols.map((b) => buildRankEntryMap(b));
+  const parentEntries = block.rankEntries || [];
+  const headerStyle = {
+    text_align: "left",
+    text_size: "normal",
+    background_style: "grey",
+    text_color: "default",
+    bold: true,
+    lines: 1,
+  };
+  if (parentEntries.length === 0) {
+    return {
+      tag: "table",
+      page_size: 5,
+      row_height: "low",
+      freeze_first_column: true,
+      header_style: headerStyle,
+      columns: [
+        {
+          name: "dim",
+          display_name: "维度",
+          data_type: "text",
+          horizontal_align: "left",
+          vertical_align: "top",
+          width: "auto",
+        },
+      ],
+      rows: [{ dim: "（无维度数据）" }],
+    };
+  }
+  const columns = [
+    {
+      name: "dim",
+      display_name: "维度",
+      data_type: "text",
+      horizontal_align: "left",
+      vertical_align: "top",
+      width: "auto",
+    },
+  ];
+  for (let i = 0; i < cols.length; i++) {
+    const c = cols[i];
+    columns.push({
+      name: `p${i}`,
+      display_name: truncateFeishuTableHeader(linkTitleForProduct(c), 20),
+      data_type: "lark_md",
+      horizontal_align: "left",
+      vertical_align: "top",
+      width: "auto",
+    });
+  }
+  const rows = [];
+  for (const e of parentEntries) {
+    const dk = queryDimensionKey(e.q);
+    const rowLabel = rankCompactLabel(e.q);
+    const row = { dim: feishuPlainTableCellText(rowLabel) };
+    for (let i = 0; i < cols.length; i++) {
+      const ent = i === 0 ? e : maps[i].get(dk);
+      const o = ent ? ent.oldRank : null;
+      const n = ent ? ent.newRank : null;
+      row[`p${i}`] = formatRankTableCellFeishu(o, n);
+    }
+    rows.push(row);
+  }
+  const pageSize = Math.min(10, Math.max(1, rows.length));
+  return {
+    tag: "table",
+    page_size: pageSize,
+    row_height: "low",
+    freeze_first_column: true,
+    header_style: headerStyle,
+    columns,
+    rows,
+  };
+}
+
+/** 多产品周报中含竞品的折叠块：链 + Markdown 表（飞书原生 table 不可放在 collapsible 内，见开放平台文档） */
+function buildFeishuCompareBlockMarkdown(block, dateOld, dateNew) {
+  const lines = [];
+  if (block.weeklySummaryNote) {
+    lines.push(`**备注** · ${block.weeklySummaryNote}`);
+    lines.push("");
+  }
+  lines.push(`**环比** · ${dateOld} → ${dateNew}`);
+  lines.push("");
+  lines.push("**快捷链接**");
+  lines.push(buildCompareTableLinksSection(block));
+  lines.push("");
+  lines.push("**对比表**");
+  lines.push("");
+  lines.push(buildRankComparisonTableMarkdown(block, { channel: "feishu" }));
+  return lines.join("\n");
+}
+
+function buildWeWorkCompareTableMarkdown(block, dateOld, dateNew) {
+  const lines = [];
+  if (block.weeklySummaryNote) {
+    lines.push(`**备注** · ${block.weeklySummaryNote}`);
+    lines.push("");
+  }
+  lines.push("**快捷链接**");
+  lines.push(buildCompareTableLinksSection(block, { wework: true }));
+  lines.push("");
+  lines.push("**产品与竞品对比**（同行为同一榜单维度；单元格为旧名次-新名次）");
+  lines.push("");
+  lines.push(buildRankComparisonTableMarkdown(block, { channel: "wework" }));
+  return lines.join("\n");
+}
+
+function buildWeWorkCompareBlockMarkdown(block, dateOld, dateNew) {
+  const lines = [];
+  if (block.weeklySummaryNote) {
+    lines.push(`**备注** · ${block.weeklySummaryNote}`);
+    lines.push("");
+  }
+  lines.push(`**环比** · ${dateOld} → ${dateNew}`);
+  lines.push("");
+  lines.push("**快捷链接**");
+  lines.push(buildCompareTableLinksSection(block, { wework: true }));
+  lines.push("");
+  lines.push("**对比表**");
+  lines.push("");
+  lines.push(buildRankComparisonTableMarkdown(block, { channel: "wework" }));
+  return lines.join("\n");
+}
+
+/**
+ * @param {{ htmlColors?: boolean, feishuSummaryMinimal?: boolean, weWorkIntro?: boolean }} [opts]
+ *   `feishuSummaryMinimal`：飞书「总结」首条专用——无「游戏总榜…有变化产品」标题、无红绿/上升下降说明，仅保留 **上升** / **下降** 与产品行（或兜底列表）。
+ *   `weWorkIntro`：企微日报产品行前缀与链接样式，见 buildIntroProductHeadLine
+ */
+function buildTotalBoardChangedIntroMarkdown(productBlocks, opts) {
+  const htmlColors = !opts || opts.htmlColors !== false;
+  const feishuSummaryMinimal = !!(opts && opts.feishuSummaryMinimal);
+  const introLineOpts = opts || {};
+  const parenOpts = { htmlColors };
+  const qual = productBlocks.filter((b) => productHasGameTotalIntroChange(b));
   const sorted = sortBlocksByLabel(qual);
   if (sorted.length === 0) {
-    return "**提示** · 本周 **ios / android** 游戏总榜无可用变化（iPad 等见下方明细）；下方为全部分榜明细，按首字母排序。";
+    return feishuSummaryMinimal
+      ? "游戏总榜无可用变化摘要；其他分榜见**单独**消息。"
+      : "**ios / android / iPad** 游戏总榜均无可用变化；其他分榜见**单独**消息或折叠块，按首字母排序。";
   }
-  const chunks = sorted.map((b) => {
-    const name = linkTitleForProduct(b);
-    const st = sensorTowerUrlForIds(b.ids || {});
-    const head = st
-      ? `- [**${escapeMdLinkLabel(name)}**](${st})`
-      : `- **${escapeMdLinkLabel(name)}**`;
-    return `${head}${buildIosAndroidGameTotalParen(b)}`;
-  });
-  return (
-    "**游戏总榜（ios / android）** · 有变化产品（按首字母）\n\n" +
-      "游戏名后括号为 **ios / android** 环比；iPad 等见下方；**详情见下方**各产品折叠。\n\n" +
-      chunks.join("\n")
-  );
+  const upLines = [];
+  const downLines = [];
+  for (const b of sorted) {
+    const raw = getGameTotalChangedEntriesForIntro(b);
+    const up = [];
+    const down = [];
+    for (const e of raw) {
+      const dir = introRankDirectionForSummary(e.oldRank, e.newRank);
+      if (dir === "up") up.push(e);
+      else if (dir === "down") down.push(e);
+    }
+    const head = buildIntroProductHeadLine(b, introLineOpts);
+    if (up.length) upLines.push(head + buildIosAndroidParenFromEntries(up, parenOpts));
+    if (down.length) downLines.push(head + buildIosAndroidParenFromEntries(down, parenOpts));
+  }
+  const intro =
+    "**游戏总榜（ios / android / iPad）** · 有变化产品（按首字母）\n\n" +
+    (htmlColors
+      ? "分 **上升** / **下降** 两块；**红（+）**/**绿（−）** 与明细同一套「旧名次 − 新名次」约定；同一产品若各端走势不同会各出现一行。"
+      : "分 **上升** / **下降** 两块；（+）/（−）与明细同一套「旧名次 − 新名次」约定；同一产品若各端走势不同会各出现一行。");
+  if (upLines.length === 0 && downLines.length === 0) {
+    const chunks = sorted.map(
+      (b) => buildIntroProductHeadLine(b, introLineOpts) + buildIosAndroidGameTotalParen(b, parenOpts),
+    );
+    if (feishuSummaryMinimal) {
+      return chunks.join("\n");
+    }
+    return `${intro}\n\n${chunks.join("\n")}`;
+  }
+  const secUp =
+    upLines.length > 0
+      ? `\n\n**上升**\n\n${upLines.join("\n")}`
+      : "\n\n**上升**\n\n（无）";
+  const secDown =
+    downLines.length > 0
+      ? `\n\n**下降**\n\n${downLines.join("\n")}`
+      : "\n\n**下降**\n\n（无）";
+  if (feishuSummaryMinimal) {
+    const su = upLines.length > 0 ? `**上升**\n\n${upLines.join("\n")}` : `**上升**\n\n（无）`;
+    const sd = downLines.length > 0 ? `**下降**\n\n${downLines.join("\n")}` : `**下降**\n\n（无）`;
+    return `${su}\n\n${sd}`;
+  }
+  return intro + secUp + secDown;
 }
 
 function apiCacheKey(q, dateStr) {
@@ -874,21 +1482,28 @@ function sensorTowerOverviewUrl(appId, countryRaw, projectId) {
   const app = String(appId).trim();
   if (!app) return null;
   const pid = projectId && String(projectId).trim();
-  const q = `country=${encodeURIComponent(code)}`;
+  /** 与 scripts/send_sensortower_weekly_push.py `_sensortower_overview_url`、generate_top5_overview 一致；country 已由 countryToCode 规范为 ASCII 码 */
+  const q = `country=${code}`;
   if (pid) {
     return `${base}/overview/${pid}/${app}?${q}`;
   }
   return `${base}/overview/${app}?${q}`;
 }
 
-function sensorTowerUrlForIds(ids) {
+/**
+ * @param {{ omitProjectId?: boolean }} [opts]
+ *   `omitProjectId`：企微 Markdown 与游戏大盘周报脚本一致，仅使用 `overview/{app_id}?country=`，不带 project 段（转发后链接更稳定）。
+ */
+function sensorTowerUrlForIds(ids, opts) {
   if (!ids) return null;
   const country = ids.country != null && ids.country !== "" ? ids.country : COUNTRY;
-  const projectId =
-    (ids.st_overview_parent_id && String(ids.st_overview_parent_id).trim()) ||
-    (process.env.ST_CHINA_OVERVIEW_PARENT_ID && String(process.env.ST_CHINA_OVERVIEW_PARENT_ID).trim()) ||
-    (process.env.SENSORTOWER_OVERVIEW_PROJECT_ID && String(process.env.SENSORTOWER_OVERVIEW_PROJECT_ID).trim()) ||
-    "";
+  const omitProject = !!(opts && opts.omitProjectId);
+  const projectId = omitProject
+    ? ""
+    : (ids.st_overview_parent_id && String(ids.st_overview_parent_id).trim()) ||
+      (process.env.ST_CHINA_OVERVIEW_PARENT_ID && String(process.env.ST_CHINA_OVERVIEW_PARENT_ID).trim()) ||
+      (process.env.SENSORTOWER_OVERVIEW_PROJECT_ID && String(process.env.SENSORTOWER_OVERVIEW_PROJECT_ID).trim()) ||
+      "";
 
   if (ids.apple_app_id) {
     return sensorTowerOverviewUrl(String(ids.apple_app_id).trim(), country, projectId);
@@ -914,7 +1529,7 @@ function escapeMdLinkLabel(s) {
   return String(s).replace(/\]/g, "﹞").replace(/\[/g, "﹝");
 }
 
-/** 飞书 plain_text 标题最长约 56 字；优先保留末尾括号（ios/android 环比） */
+/** 飞书 plain_text 标题最长约 56 字；优先保留末尾括号（ios/android/iPad 环比） */
 function feishuTruncateWithOptionalParen(base, paren) {
   const max = 56;
   const b = String(base || "").trim() || "产品";
@@ -927,164 +1542,220 @@ function feishuTruncateWithOptionalParen(base, paren) {
   return `${b.slice(0, room - 1)}…${p}`;
 }
 
-/** 折叠面板标题：内部名（含重名后缀）；含竞品数量；游戏名后接 ios/android 括号环比 */
-function feishuPanelTitleFromProduct(block) {
+/** 折叠面板标题：内部名（含重名后缀）；含竞品数量；游戏名后接 ios/android/iPad 括号环比 */
+function feishuPanelTitleFromProduct(block, opts) {
   let t = linkTitleForProduct(block).trim() || "产品";
   const n = (block.competitorPanels || []).length;
-  if (n > 0) t = `${t} · ${n}竞品`;
-  const paren = buildIosAndroidGameTotalParen(block);
+  if (n > 0 && !(opts && opts.omitCompetitorCount)) t = `${t} · ${n}竞品`;
+  const paren = buildIosAndroidGameTotalParen(block, { plainText: true });
   return feishuTruncateWithOptionalParen(t, paren);
 }
 
-/** 竞品游戏总榜折叠标题：竞品 · 名（ios…，android…） */
-function feishuCompetitorGameTotalPanelTitle(c) {
+/** 竞品折叠标题：竞品 · 名（ios…，android…） */
+function feishuCompetitorPanelTitle(c) {
   const base = `竞品 · ${linkTitleForProduct(c).trim() || "竞品"}`;
-  const paren = buildIosAndroidGameTotalParen(c);
+  const paren = buildIosAndroidGameTotalParen(c, { plainText: true });
   return feishuTruncateWithOptionalParen(base, paren);
 }
 
-function buildFeishuCard(dateOld, dateNew, productBlocks) {
-  const sortedBlocks = sortBlocksByLabel(productBlocks);
+/** @param {'summary'|'standalone'} role 总结 / 单独（不再使用 Daily/Weekly 文案） */
+function buildFeishuNoteFooterElements(role) {
+  const cn = role === "standalone" ? "单独" : "总结";
+  return [
+    { tag: "hr" },
+    {
+      tag: "note",
+      elements: [
+        {
+          tag: "plain_text",
+          content: `US Free · ${cn} · ${new Date().toLocaleString("zh-CN", {
+            timeZone: "Asia/Shanghai",
+            hour12: false,
+          })}`,
+        },
+      ],
+    },
+  ];
+}
+
+/** 「单独」消息顶部：置顶产品目录（与下方折叠标题一致，含本品与嵌套竞品） */
+function buildFeishuProductDirectoryMarkdown(sortedBlocks) {
+  const lines = ["**📌 产品目录**（首字母序，与下方折叠块标题一致）", ""];
+  for (const block of sortedBlocks) {
+    lines.push(`- ${feishuPanelTitleFromProduct(block)}`);
+    const comps = block.competitorPanels || [];
+    for (const c of comps) {
+      lines.push(`  - ${feishuCompetitorPanelTitle(c)}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+/**
+ * @param {{ flatCompetitors?: boolean, compareTable?: boolean, dateOld?: string, dateNew?: string }} [opts]
+ */
+function buildFeishuCollapsiblePanelElements(sortedBlocks, opts) {
+  const flatCompetitors = !!(opts && opts.flatCompetitors);
+  const compareTable = !!(opts && opts.compareTable);
+  const dateOld = opts && opts.dateOld;
+  const dateNew = opts && opts.dateNew;
+  const out = [];
+  if (!sortedBlocks || sortedBlocks.length === 0) {
+    out.push({
+      tag: "div",
+      text: { tag: "plain_text", content: "（无数据）" },
+    });
+    return out;
+  }
+  const rankExpanded =
+    String(process.env.FEISHU_RANK_DETAIL_EXPANDED || "").trim() === "1" ||
+    String(process.env.FEISHU_RANK_DETAIL_EXPANDED || "").toLowerCase() === "true";
+  const panelShell = {
+    tag: "collapsible_panel",
+    expanded: rankExpanded,
+    background_color: "grey",
+    header: {
+      title: { tag: "plain_text", content: "" },
+      vertical_align: "center",
+      icon: {
+        tag: "standard_icon",
+        token: "down-small-ccm_outlined",
+        color: "",
+        size: "16px 16px",
+      },
+      icon_position: "right",
+      icon_expanded_angle: -180,
+    },
+    border: {
+      color: "grey",
+      corner_radius: "5px",
+    },
+    vertical_spacing: "8px",
+    padding: "8px",
+    elements: [],
+  };
+  const nestedPanelShell = {
+    tag: "collapsible_panel",
+    expanded: false,
+    background_color: "grey",
+    header: {
+      title: { tag: "plain_text", content: "" },
+      vertical_align: "center",
+      icon: {
+        tag: "standard_icon",
+        token: "down-small-ccm_outlined",
+        color: "",
+        size: "16px 16px",
+      },
+      icon_position: "right",
+      icon_expanded_angle: -180,
+    },
+    border: {
+      color: "grey",
+      corner_radius: "5px",
+    },
+    vertical_spacing: "8px",
+    padding: "8px",
+    elements: [],
+  };
+  for (let i = 0; i < sortedBlocks.length; i++) {
+    const block = sortedBlocks[i];
+    const comps = block.competitorPanels || [];
+    if (compareTable && comps.length > 0 && dateOld && dateNew) {
+      out.push({
+        ...panelShell,
+        header: {
+          ...panelShell.header,
+          title: {
+            tag: "plain_text",
+            content: feishuPanelTitleFromProduct(block, { omitCompetitorCount: true }),
+          },
+        },
+        elements: [{ tag: "markdown", content: buildFeishuCompareBlockMarkdown(block, dateOld, dateNew) }],
+      });
+      continue;
+    }
+    if (flatCompetitors) {
+      const mainTitle = feishuPanelTitleFromProduct(block, { omitCompetitorCount: true });
+      out.push({
+        ...panelShell,
+        header: {
+          ...panelShell.header,
+          title: { tag: "plain_text", content: mainTitle },
+        },
+        elements: [{ tag: "markdown", content: buildRankPanelMarkdownBody(block) }],
+      });
+      for (const c of comps) {
+        out.push({
+          ...panelShell,
+          header: {
+            ...panelShell.header,
+            title: { tag: "plain_text", content: feishuCompetitorPanelTitle(c) },
+          },
+          elements: [{ tag: "markdown", content: buildRankPanelMarkdownBody(c) }],
+        });
+      }
+      continue;
+    }
+    const panelElements = [];
+    panelElements.push({ tag: "markdown", content: buildRankPanelMarkdownBody(block) });
+    for (const c of comps) {
+      panelElements.push({
+        ...nestedPanelShell,
+        header: {
+          ...nestedPanelShell.header,
+          title: { tag: "plain_text", content: feishuCompetitorPanelTitle(c) },
+        },
+        elements: [{ tag: "markdown", content: buildRankPanelMarkdownBody(c) }],
+      });
+    }
+    out.push({
+      ...panelShell,
+      header: {
+        ...panelShell.header,
+        title: {
+          tag: "plain_text",
+          content: feishuPanelTitleFromProduct(block),
+        },
+      },
+      elements: panelElements,
+    });
+  }
+  return out;
+}
+
+/**
+ * 日报总结正文（游戏总榜摘要）：与周报「单独」、折叠块、对比表等逻辑解耦。
+ * @param {{ wework?: boolean }} [opts] 企微为 true 时不着色
+ */
+function buildDailySummaryBodyMarkdown(productBlocks, opts) {
+  const wework = !!(opts && opts.wework);
+  return buildTotalBoardChangedIntroMarkdown(productBlocks, {
+    feishuSummaryMinimal: true,
+    htmlColors: !wework,
+    weWorkIntro: wework,
+  });
+}
+
+/** 飞书/企微头栏：统计范围说明 */
+const US_FREE_CHART_SCOPE_MARKDOWN = "**统计口径** · 仅统计各维度入围前 500 名的本公司产品。";
+
+/** 飞书日报：仅一条总结；无 note 页脚；标题固定不含日期 */
+function buildFeishuDailySummaryCard(dateOld, dateNew, summaryMarkdown) {
   const elements = [];
   elements.push({
     tag: "markdown",
     content: [
       "**📍 美国 US** · 免费榜（iPhone / iPad / Android）",
       "",
-      "**在榜** · 名次位于前500名以内；**未上榜** · 未进入前500。",
+      US_FREE_CHART_SCOPE_MARKDOWN,
       "",
-      `**环比** · ${dateOld} → ${dateNew}`,
+      `**日环比** · ${dateOld} → ${dateNew}`,
     ].join("\n"),
   });
   elements.push({ tag: "hr" });
-  elements.push({
-    tag: "markdown",
-    content: buildTotalBoardChangedIntroMarkdown(productBlocks),
-  });
-  elements.push({ tag: "hr" });
-  elements.push({
-    tag: "markdown",
-    content:
-      "**📋 分榜明细（过去七天）**\n\n下列按**产品内部名首字母**排序；点击标题栏展开**快捷链接**与各维度排名。",
-  });
-
-  if (!sortedBlocks || sortedBlocks.length === 0) {
-    elements.push({
-      tag: "div",
-      text: { tag: "plain_text", content: "（无数据）" },
-    });
-  } else {
-    const rankExpanded =
-      String(process.env.FEISHU_RANK_DETAIL_EXPANDED || "").trim() === "1" ||
-      String(process.env.FEISHU_RANK_DETAIL_EXPANDED || "").toLowerCase() === "true";
-    const panelShell = {
-      tag: "collapsible_panel",
-      expanded: rankExpanded,
-      background_color: "grey",
-      header: {
-        title: { tag: "plain_text", content: "" },
-        vertical_align: "center",
-        icon: {
-          tag: "standard_icon",
-          token: "down-small-ccm_outlined",
-          color: "",
-          size: "16px 16px",
-        },
-        icon_position: "right",
-        icon_expanded_angle: -180,
-      },
-      border: {
-        color: "grey",
-        corner_radius: "5px",
-      },
-      vertical_spacing: "8px",
-      padding: "8px",
-      elements: [],
-    };
-    const nestedPanelShell = {
-      tag: "collapsible_panel",
-      expanded: false,
-      background_color: "grey",
-      header: {
-        title: { tag: "plain_text", content: "" },
-        vertical_align: "center",
-        icon: {
-          tag: "standard_icon",
-          token: "down-small-ccm_outlined",
-          color: "",
-          size: "16px 16px",
-        },
-        icon_position: "right",
-        icon_expanded_angle: -180,
-      },
-      border: {
-        color: "grey",
-        corner_radius: "5px",
-      },
-      vertical_spacing: "8px",
-      padding: "8px",
-      elements: [],
-    };
-    for (let i = 0; i < sortedBlocks.length; i++) {
-      const block = sortedBlocks[i];
-      const panelElements = [];
-      panelElements.push({ tag: "markdown", content: buildRankPanelMarkdownBody(block) });
-      const comps = block.competitorPanels || [];
-      for (const c of comps) {
-        const compTitle = feishuCompetitorGameTotalPanelTitle(c);
-        const compMd = buildCompetitorGameTotalMarkdown(c, { titleInPanel: true });
-        panelElements.push({
-          ...nestedPanelShell,
-          header: {
-            ...nestedPanelShell.header,
-            title: { tag: "plain_text", content: compTitle },
-          },
-          elements: [{ tag: "markdown", content: compMd }],
-        });
-        const restMd = buildCompetitorRestMarkdown(c);
-        if (restMd) {
-          let subTitle = `竞品 · ${linkTitleForProduct(c)} · 其他分榜`;
-          subTitle = feishuTruncateWithOptionalParen(subTitle, buildIosAndroidGameTotalParen(c));
-          panelElements.push({
-            ...nestedPanelShell,
-            header: {
-              ...nestedPanelShell.header,
-              title: { tag: "plain_text", content: subTitle },
-            },
-            elements: [{ tag: "markdown", content: restMd }],
-          });
-        }
-      }
-      elements.push({
-        ...panelShell,
-        header: {
-          ...panelShell.header,
-          title: {
-            tag: "plain_text",
-            content: feishuPanelTitleFromProduct(block),
-          },
-        },
-        elements: panelElements,
-      });
-    }
-  }
-
-  elements.push({ tag: "hr" });
-  elements.push({
-    tag: "note",
-    elements: [
-      {
-        tag: "plain_text",
-        content: `US Free AppID Weekly · ${new Date().toLocaleString("zh-CN", {
-          timeZone: "Asia/Shanghai",
-          hour12: false,
-        })}`,
-      },
-    ],
-  });
-
-  const title = `公司自有产品 SensorTower US 免费榜排名变化 ${dateOld}～${dateNew}`;
-
+  elements.push({ tag: "markdown", content: summaryMarkdown });
+  const title = `公司自有产品 · SensorTower US 免费榜 · 日总结`;
   return {
     msg_type: "interactive",
     card: {
@@ -1096,6 +1767,386 @@ function buildFeishuCard(dateOld, dateNew, productBlocks) {
       elements,
     },
   };
+}
+
+/** 飞书第 1 条：总结（游戏总榜 ios/android/iPad 摘要等） */
+function buildFeishuWeeklySummaryCard(dateOld, dateNew, productBlocks) {
+  const elements = [];
+  elements.push({
+    tag: "markdown",
+    content: [
+      "**📍 美国 US** · 免费榜（iPhone / iPad / Android）",
+      "",
+      US_FREE_CHART_SCOPE_MARKDOWN,
+      "",
+      `**环比** · ${dateOld} → ${dateNew}`,
+    ].join("\n"),
+  });
+  elements.push({ tag: "hr" });
+  elements.push({
+    tag: "markdown",
+    content: buildTotalBoardChangedIntroMarkdown(productBlocks, { feishuSummaryMinimal: true }),
+  });
+
+  const title = `公司自有产品 SensorTower US 免费榜排名变化 · 总结`;
+  return {
+    msg_type: "interactive",
+    card: {
+      config: { wide_screen_mode: true, enable_forward: true },
+      header: {
+        template: "turquoise",
+        title: { tag: "plain_text", content: title },
+      },
+      elements,
+    },
+  };
+}
+
+/**
+ * 飞书「单独」：置顶产品目录 + 各维度折叠明细
+ * @param {{ minimal?: boolean, compareTable?: boolean }} [opts] `minimal=true`（单产品推送）：不要总结、也不要目录与说明，仅折叠块 + 页脚；`compare-table` 时有竞品则整卡为对比表
+ */
+function buildFeishuWeeklyDetailCard(dateOld, dateNew, productBlocks, opts) {
+  const minimal = !!(opts && opts.minimal);
+  const compareTable = !!(opts && opts.compareTable);
+  const sortedBlocks = sortBlocksByLabel(productBlocks);
+  const singleParentWithComps =
+    sortedBlocks.length === 1 && (sortedBlocks[0].competitorPanels || []).length > 0;
+  const elements = [];
+  if (!minimal) {
+    elements.push({
+      tag: "markdown",
+      content: buildFeishuProductDirectoryMarkdown(sortedBlocks),
+    });
+    elements.push({ tag: "hr" });
+    if (compareTable && singleParentWithComps) {
+      elements.push({
+        tag: "markdown",
+        content: "**📋 各维度对比**（表格；行=同榜维度，列=本品与竞品）",
+      });
+    } else {
+      elements.push({
+        tag: "markdown",
+        content:
+          "**📋 各维度明细**（单独）\n\n按**产品内部名首字母**排序；点击标题栏展开**快捷链接**与各维度排名。",
+      });
+    }
+  }
+  if (compareTable && singleParentWithComps) {
+    elements.push({
+      tag: "markdown",
+      content: buildFeishuCompareTableIntroMarkdown(sortedBlocks[0], dateOld, dateNew),
+    });
+    elements.push(buildFeishuRankComparisonTableElement(sortedBlocks[0]));
+    elements.push(...buildFeishuNoteFooterElements("standalone"));
+    const title = `公司自有产品 SensorTower US 免费榜排名变化 ${dateOld}～${dateNew} · 对比表`;
+    return {
+      msg_type: "interactive",
+      card: {
+        config: { wide_screen_mode: true, enable_forward: true },
+        header: {
+          template: "turquoise",
+          title: { tag: "plain_text", content: title },
+        },
+        elements,
+      },
+    };
+  }
+
+  const flatCompetitors =
+    minimal &&
+    !(compareTable && sortedBlocks.some((b) => (b.competitorPanels || []).length > 0));
+  elements.push(
+    ...buildFeishuCollapsiblePanelElements(sortedBlocks, {
+      flatCompetitors,
+      compareTable,
+      dateOld,
+      dateNew,
+    }),
+  );
+  elements.push(...buildFeishuNoteFooterElements("standalone"));
+
+  const title = minimal
+    ? `公司自有产品 SensorTower US 免费榜排名变化 ${dateOld}～${dateNew} · 明细`
+    : `公司自有产品 SensorTower US 免费榜排名变化 ${dateOld}～${dateNew} · 单独`;
+  return {
+    msg_type: "interactive",
+    card: {
+      config: { wide_screen_mode: true, enable_forward: true },
+      header: {
+        template: "turquoise",
+        title: { tag: "plain_text", content: title },
+      },
+      elements,
+    },
+  };
+}
+
+/** 仅日报一条总结卡；周报请用 buildFeishuWeeklySummaryCard / buildFeishuWeeklyDetailCard */
+function buildFeishuCard(dateOld, dateNew, productBlocks, reportKind) {
+  if (reportKind === "daily") {
+    const body = buildDailySummaryBodyMarkdown(productBlocks, { wework: false });
+    return buildFeishuDailySummaryCard(dateOld, dateNew, body);
+  }
+  throw new Error("飞书已拆成「总结」与「单独」两条，请使用 buildFeishuWeeklySummaryCard / buildFeishuWeeklyDetailCard");
+}
+
+/** 企业微信机器人 markdown 单条上限 4096 字节；预留序号头，默认按 3800 切分正文 */
+const WEWORK_MARKDOWN_BODY_BYTES_DEFAULT = 3800;
+
+function getWeWorkMarkdownBodyMaxBytes() {
+  const n = parseInt(String(process.env.WEWORK_MARKDOWN_MAX_BYTES || "").trim(), 10);
+  if (Number.isFinite(n) && n >= 800 && n <= 4096) return n;
+  return WEWORK_MARKDOWN_BODY_BYTES_DEFAULT;
+}
+
+function splitUtf8ByMaxBytes(text, maxBytes) {
+  const out = [];
+  let buf = "";
+  for (const ch of text) {
+    const trial = buf + ch;
+    if (Buffer.byteLength(trial, "utf8") > maxBytes) {
+      if (buf) out.push(buf);
+      buf = ch;
+    } else {
+      buf = trial;
+    }
+  }
+  if (buf) out.push(buf);
+  return out;
+}
+
+/** 按行累加字节切分；超长单行再按字符切 */
+function splitMarkdownForWeWorkBytes(text, maxBytes) {
+  if (Buffer.byteLength(text, "utf8") <= maxBytes) return [text];
+  const chunks = [];
+  let cur = "";
+  const lines = text.split("\n");
+  for (const line of lines) {
+    if (Buffer.byteLength(line, "utf8") > maxBytes) {
+      if (cur) {
+        chunks.push(cur);
+        cur = "";
+      }
+      chunks.push(...splitUtf8ByMaxBytes(line, maxBytes));
+      continue;
+    }
+    const joiner = cur ? "\n" : "";
+    const cand = cur + joiner + line;
+    if (Buffer.byteLength(cand, "utf8") <= maxBytes) {
+      cur = cand;
+    } else {
+      if (cur) chunks.push(cur);
+      cur = line;
+    }
+  }
+  if (cur) chunks.push(cur);
+  return chunks;
+}
+
+/** 企微日报：「上升」「下降」节前加 emoji */
+function weWorkDailyEmojiUpDown(text) {
+  return String(text)
+    .replace(/\*\*上升\*\*/g, "📈 **上升**")
+    .replace(/\*\*下降\*\*/g, "📉 **下降**");
+}
+
+function buildWeWorkMarkdown(dateOld, dateNew, productBlocks, reportKind, opts) {
+  const skipSummary = !!(opts && opts.skipSummary);
+  const kind = reportKind === "daily" ? "daily" : "weekly";
+  const lines = [];
+  if (kind === "daily") {
+    lines.push(`**公司自有产品 · SensorTower US 免费榜 ${dateOld}～${dateNew}**`);
+  } else {
+    lines.push(`## 公司自有产品 · SensorTower US 免费榜 ${dateOld}～${dateNew}`);
+  }
+  lines.push("");
+  lines.push("**📍 美国 US** · 免费榜（iPhone / iPad / Android）");
+  lines.push("");
+  lines.push(US_FREE_CHART_SCOPE_MARKDOWN);
+  lines.push("");
+  lines.push(`${kind === "daily" ? "**日环比**" : "**环比**"} · ${dateOld} → ${dateNew}`);
+  lines.push("");
+  if (kind === "daily") {
+    let body = buildDailySummaryBodyMarkdown(productBlocks, { wework: true });
+    body = weWorkDailyEmojiUpDown(body);
+    lines.push(body);
+    return lines.join("\n").trim();
+  }
+
+  if (kind === "weekly" && skipSummary) {
+    lines.push("---");
+    lines.push("");
+  } else {
+    lines.push("---");
+    lines.push("");
+    lines.push(buildTotalBoardChangedIntroMarkdown(productBlocks, { htmlColors: false }));
+    lines.push("");
+    lines.push("---");
+    lines.push("");
+  }
+
+  if (kind === "weekly" && opts && opts.summaryOnly) {
+    lines.push(
+      `US Free · 总结 · ${new Date().toLocaleString("zh-CN", {
+        timeZone: "Asia/Shanghai",
+        hour12: false,
+      })}`,
+    );
+    return lines.join("\n").trim();
+  }
+
+  const sortedBlocks = sortBlocksByLabel(productBlocks);
+  const compareTable = !!(opts && opts.compareTable);
+  const singleParentWithComps =
+    sortedBlocks.length === 1 && (sortedBlocks[0].competitorPanels || []).length > 0;
+
+  if (compareTable && singleParentWithComps) {
+    lines.push("**📋 各维度对比**（表格）");
+    lines.push("");
+    lines.push(buildWeWorkCompareTableMarkdown(sortedBlocks[0], dateOld, dateNew));
+    lines.push("");
+    lines.push("---");
+    lines.push("");
+    lines.push(
+      skipSummary
+        ? `US Free · 明细 · ${new Date().toLocaleString("zh-CN", {
+            timeZone: "Asia/Shanghai",
+            hour12: false,
+          })}`
+        : `US Free · 总结+单独 · ${new Date().toLocaleString("zh-CN", {
+            timeZone: "Asia/Shanghai",
+            hour12: false,
+          })}`,
+    );
+    return lines.join("\n").trim();
+  }
+
+  lines.push(
+    skipSummary
+      ? "**📋 各维度明细**（单产品；无折叠，以标题分层）"
+      : "**📋 单独 · 各维度明细**（首字母；无折叠，以标题分层）",
+  );
+  lines.push("");
+  if (!sortedBlocks.length) {
+    lines.push("（无数据）");
+  } else {
+    for (const block of sortedBlocks) {
+      if (compareTable && (block.competitorPanels || []).length > 0) {
+        lines.push(
+          formatWeWorkMarkdownH3Product(block, skipSummary ? { omitCompetitorCount: true } : undefined),
+        );
+        lines.push("");
+        lines.push(buildWeWorkCompareBlockMarkdown(block, dateOld, dateNew));
+        lines.push("");
+        lines.push("---");
+        lines.push("");
+        continue;
+      }
+      lines.push(
+        formatWeWorkMarkdownH3Product(block, skipSummary ? { omitCompetitorCount: true } : undefined),
+      );
+      lines.push("");
+      lines.push(buildRankPanelMarkdownBody(block, { channel: "wework" }));
+      lines.push("");
+      const comps = block.competitorPanels || [];
+      for (const c of comps) {
+        lines.push(skipSummary ? formatWeWorkMarkdownH3Competitor(c) : formatWeWorkMarkdownH4Competitor(c));
+        lines.push("");
+        lines.push(buildRankPanelMarkdownBody(c, { channel: "wework" }));
+        lines.push("");
+      }
+      lines.push("---");
+      lines.push("");
+    }
+  }
+  lines.push(
+    skipSummary
+      ? `US Free · 明细 · ${new Date().toLocaleString("zh-CN", {
+          timeZone: "Asia/Shanghai",
+          hour12: false,
+        })}`
+      : `US Free · 总结+单独 · ${new Date().toLocaleString("zh-CN", {
+          timeZone: "Asia/Shanghai",
+          hour12: false,
+        })}`,
+  );
+  return lines.join("\n").trim();
+}
+
+function httpsPathWithQuery(url) {
+  return url.pathname + (url.search || "");
+}
+
+function sendWeWorkMarkdownMessage(webhookUrl, markdownContent) {
+  return new Promise((resolve, reject) => {
+    const url = new URL(webhookUrl);
+    const body = JSON.stringify({
+      msgtype: "markdown",
+      markdown: { content: markdownContent },
+    });
+    const options = {
+      hostname: url.hostname,
+      path: httpsPathWithQuery(url),
+      port: 443,
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(body),
+      },
+    };
+
+    const req = https.request(options, (res) => {
+      let data = "";
+      res.on("data", (chunk) => (data += chunk));
+      res.on("end", () => {
+        try {
+          const json = JSON.parse(data);
+          if (json.errcode === 0) resolve(json);
+          else {
+            const err = new Error(`WeWork error: ${data.slice(0, 400)}`);
+            err.weworkJson = json;
+            reject(err);
+          }
+        } catch (e) {
+          reject(new Error(`WeWork parse: ${data.slice(0, 200)}`));
+        }
+      });
+    });
+
+    req.on("error", reject);
+    req.setTimeout(15000, () => {
+      req.destroy();
+      reject(new Error("WeWork timeout"));
+    });
+    req.write(body);
+    req.end();
+  });
+}
+
+/** 超长则拆多条顺序发送；序号 `[1/3]` 仅在多条时出现 */
+async function sendWeWorkWeekly(webhookUrl, dateOld, dateNew, productBlocks, reportKind, opts) {
+  const hardMax = 4096;
+  const bodyMax = Math.min(getWeWorkMarkdownBodyMaxBytes(), hardMax - 120);
+  const full = buildWeWorkMarkdown(dateOld, dateNew, productBlocks, reportKind, opts);
+  let parts = splitMarkdownForWeWorkBytes(full, bodyMax);
+  if (parts.length === 0) parts = [""];
+  console.log(
+    `企业微信将发送 ${parts.length} 条 markdown（单条正文切分 ≤ ${bodyMax} 字节，含序号后 ≤ ${hardMax}）`,
+  );
+  for (let i = 0; i < parts.length; i++) {
+    const idx = `[${i + 1}/${parts.length}]`;
+    const content = parts.length > 1 ? `${idx}\n\n${parts[i]}` : parts[i];
+    const blen = Buffer.byteLength(content, "utf8");
+    if (blen > hardMax) {
+      throw new Error(
+        `企业微信单条 ${blen} 字节仍超过 ${hardMax}，请调低 WEWORK_MARKDOWN_MAX_BYTES（当前正文上限 ${bodyMax}）`,
+      );
+    }
+    await sendWeWorkMarkdownMessage(webhookUrl, content);
+    console.log(`企业微信 ${i + 1}/${parts.length} 已发送（${blen} 字节）`);
+    if (i < parts.length - 1) await sleep(250);
+  }
 }
 
 function sendFeishuMessage(webhookUrl, cardPayload) {
@@ -1141,16 +2192,14 @@ function sendFeishuMessage(webhookUrl, cardPayload) {
   });
 }
 
-/** 单条交互卡片推送整份周报；遇 11232 频率限制则退避重试 */
-async function sendFeishuWeeklyCard(webhookUrl, dateOld, dateNew, productBlocks, productCount, lineCount) {
-  console.log(`飞书将发送 1 条消息（含 ${productBlocks.length} 个产品）`);
-  const card = buildFeishuCard(dateOld, dateNew, productBlocks);
+/** 单条交互卡片；遇 11232 则退避重试 */
+async function sendFeishuMessageWithRetry(webhookUrl, cardPayload, label) {
   let attempt = 0;
   const maxAttempts = 5;
   while (attempt < maxAttempts) {
     try {
-      await sendFeishuMessage(webhookUrl, card);
-      console.log("飞书已发送");
+      await sendFeishuMessage(webhookUrl, cardPayload);
+      console.log(label ? `飞书已发送（${label}）` : "飞书已发送");
       return;
     } catch (e) {
       const msg = e && e.message ? e.message : String(e);
@@ -1169,37 +2218,72 @@ async function sendFeishuWeeklyCard(webhookUrl, dateOld, dateNew, productBlocks,
 }
 
 /**
- * 仅从本地 DB 读取两期 rank，重建简报并推送飞书（不调 SensorTower API）
+ * `--daily`：1 条（仅总结）。周报：默认 2 条（总结 → 单独）；`opts.skipSummary`（如 `--only-product`）时仅 1 条，且仅折叠明细（无目录与说明）。
  */
-async function feishuOnlyMain() {
-  const raw = process.argv.slice(2).filter((a) => a !== "--feishu-only");
-  let DATE_NEW;
-  let DATE_OLD;
-  if (raw[0] && /^\d{4}-\d{2}-\d{2}$/.test(raw[0])) {
-    DATE_NEW = raw[0];
-    DATE_OLD = raw[1] && /^\d{4}-\d{2}-\d{2}$/.test(raw[1]) ? raw[1] : addDays(DATE_NEW, -7);
-  } else {
-    DATE_NEW = getLastSunday();
-    DATE_OLD = addDays(DATE_NEW, -7);
+async function sendFeishuWeeklyCard(webhookUrl, dateOld, dateNew, productBlocks, productCount, lineCount, reportKind, opts) {
+  const skipSummary = !!(opts && opts.skipSummary);
+  const summaryOnly = !!(opts && opts.summaryOnly);
+  if (reportKind === "daily") {
+    console.log(`飞书将发送 1 条消息（仅总结，${productBlocks.length} 个产品块）`);
+    const card = buildFeishuCard(dateOld, dateNew, productBlocks, "daily");
+    await sendFeishuMessageWithRetry(webhookUrl, card, "总结");
+    return;
   }
 
-  loadEnv(path.join(ROOT, ".env"));
-  const webhook = process.env.FEISHU_WEBHOOK_URL;
-  if (!webhook) {
-    console.error("缺少 FEISHU_WEBHOOK_URL");
-    process.exit(1);
+  if (summaryOnly && !skipSummary) {
+    console.log(`飞书将发送 1 条消息（仅总结，无单独；${productBlocks.length} 个产品块）`);
+    const summaryCard = buildFeishuWeeklySummaryCard(dateOld, dateNew, productBlocks);
+    await sendFeishuMessageWithRetry(webhookUrl, summaryCard, "总结");
+    return;
   }
 
-  if (!fs.existsSync(DB_PATH)) {
-    console.error(`数据库不存在: ${DB_PATH}，请先跑完整周报脚本`);
-    process.exit(1);
+  if (skipSummary) {
+    const ct = !!(opts && opts.compareTable);
+    const hasComps =
+      productBlocks.length === 1 && (productBlocks[0].competitorPanels || []).length > 0;
+    console.log(
+      ct && hasComps
+        ? `飞书将发送 1 条消息（产品与竞品对比表，无总结；1 个产品块）`
+        : `飞书将发送 1 条消息（仅折叠明细，无总结；${productBlocks.length} 个产品块）`,
+    );
+    const detailCard = buildFeishuWeeklyDetailCard(dateOld, dateNew, productBlocks, {
+      minimal: true,
+      compareTable: !!(opts && opts.compareTable),
+    });
+    const sendLabel = ct && hasComps ? "对比表" : "明细";
+    await sendFeishuMessageWithRetry(webhookUrl, detailCard, sendLabel);
+    return;
   }
 
-  const list = JSON.parse(fs.readFileSync(APPID_US_JSON, "utf-8"));
+  console.log(`飞书将发送 2 条消息（总结 + 单独，${productBlocks.length} 个产品块）`);
+  const summaryCard = buildFeishuWeeklySummaryCard(dateOld, dateNew, productBlocks);
+  await sendFeishuMessageWithRetry(webhookUrl, summaryCard, "总结");
+  await sleep(800);
+  const detailCard = buildFeishuWeeklyDetailCard(dateOld, dateNew, productBlocks, {
+    compareTable: !!(opts && opts.compareTable),
+  });
+  await sendFeishuMessageWithRetry(webhookUrl, detailCard, "单独");
+}
+
+/**
+ * 从 appid_us.json + 本地 DB 两期 rank 重建 mergedBlocks（不调 SensorTower API）
+ * @param {{ skipCompetitors?: boolean, onlyProduct?: string|null }} [opts]
+ * @returns {{ mergedBlocks: Array, lineCount: number }}
+ */
+async function loadMergedBlocksFromDatabase(DATE_OLD, DATE_NEW, opts) {
+  const skipCompetitors = !!(opts && opts.skipCompetitors);
+  const onlyProduct = opts && opts.onlyProduct ? String(opts.onlyProduct).trim() : "";
+  let list = JSON.parse(fs.readFileSync(APPID_US_JSON, "utf-8"));
+  if (onlyProduct) {
+    list = list.filter((row) => String(row.internal_name) === onlyProduct);
+    if (list.length === 0) {
+      throw new Error(`appid_us.json 中无 internal_name「${onlyProduct}」`);
+    }
+  }
 
   let flatQueries = [];
   for (const row of list) {
-    const qs = expandQueriesForApp(row);
+    const qs = expandQueriesForApp(row, { skipCompetitors });
     if (qs.length === 0) continue;
     flatQueries.push(...qs);
   }
@@ -1210,8 +2294,11 @@ async function feishuOnlyMain() {
   }
 
   if (flatQueries.length === 0) {
-    console.error("没有可展开的维度，请检查 appid_us.json");
-    process.exit(1);
+    throw new Error("没有可展开的维度，请检查 appid_us.json");
+  }
+
+  if (!fs.existsSync(DB_PATH)) {
+    throw new Error(`数据库不存在: ${DB_PATH}，请先跑完整周报脚本`);
   }
 
   const SQL = await initSqlJs();
@@ -1275,8 +2362,7 @@ async function feishuOnlyMain() {
   }
 
   if (byProduct.size === 0) {
-    console.error(`库中无 ${DATE_OLD} / ${DATE_NEW} 的排名数据，请先跑完整脚本写入 app_ranks`);
-    process.exit(1);
+    throw new Error(`库中无 ${DATE_OLD} / ${DATE_NEW} 的排名数据，请先跑完整脚本写入 app_ranks`);
   }
 
   const lineCount = [...byProduct.values()].reduce((s, x) => s + x.lines.length, 0);
@@ -1300,15 +2386,103 @@ async function feishuOnlyMain() {
     });
   }
 
-  const mergedBlocks = mergeCompetitorBlocksIntoParents(productBlocks);
+  let mergedBlocks = mergeCompetitorBlocksIntoParents(productBlocks);
   assignInternalNameLabels(mergedBlocks);
+  if (onlyProduct) {
+    const fb = filterMergedBlocksToSingleProduct(mergedBlocks, onlyProduct);
+    if (!fb.length) {
+      throw new Error(`合并后未找到本品「${onlyProduct}」（需与 appid_us 的 internal_name 一致）`);
+    }
+    mergedBlocks = fb;
+  }
+  return { mergedBlocks, lineCount };
+}
+
+/**
+ * 仅从本地 DB 读取两期 rank，重建简报并推送飞书（不调 SensorTower API）
+ */
+async function feishuOnlyMain() {
+  const raw = process.argv.slice(2).filter((a) => a !== "--feishu-only");
+  const run = parseRunFlags(raw);
+  const { DATE_OLD, DATE_NEW } = resolveDateRangeFromArgs(run.rest, { daily: run.daily });
+  const reportKind = reportKindFromFlags(run);
+
+  loadEnv(path.join(ROOT, ".env"));
+  const webhook = process.env.FEISHU_WEBHOOK_URL;
+  if (!webhook) {
+    console.error("缺少 FEISHU_WEBHOOK_URL");
+    process.exit(1);
+  }
+
+  let mergedBlocks;
+  let lineCount;
+  try {
+    const r = await loadMergedBlocksFromDatabase(DATE_OLD, DATE_NEW, {
+      skipCompetitors: run.noCompetitors,
+      onlyProduct: run.onlyProduct,
+    });
+    mergedBlocks = r.mergedBlocks;
+    lineCount = r.lineCount;
+  } catch (e) {
+    console.error(e.message || e);
+    process.exit(1);
+  }
 
   console.log(
-    `仅飞书推送：${DATE_OLD} → ${DATE_NEW}，折叠块 ${mergedBlocks.length} 个（含竞品已并入本品），维度 ${lineCount}`,
+    `仅飞书推送：${DATE_OLD} → ${DATE_NEW}，折叠块 ${mergedBlocks.length} 个${run.onlyProduct ? `（仅 ${run.onlyProduct}）` : ""}${run.noCompetitors ? "（无竞品）" : "（含竞品已并入本品）"}，维度 ${lineCount}`,
   );
 
-  await sendFeishuWeeklyCard(webhook, DATE_OLD, DATE_NEW, mergedBlocks, mergedBlocks.length, lineCount);
+  await sendFeishuWeeklyCard(webhook, DATE_OLD, DATE_NEW, mergedBlocks, mergedBlocks.length, lineCount, reportKind, {
+    skipSummary: !!run.onlyProduct,
+    compareTable: !!run.compareTable,
+    summaryOnly: !!run.summaryOnly,
+  });
   console.log("飞书推送完成");
+}
+
+/** 仅推送企业微信（依赖本地 DB，逻辑同 --feishu-only） */
+async function weworkOnlyMain() {
+  const raw = process.argv.slice(2).filter((a) => !ARG_WEEWORK_ONLY.has(a));
+  const run = parseRunFlags(raw);
+  const { DATE_OLD, DATE_NEW } = resolveDateRangeFromArgs(run.rest, { daily: run.daily });
+  const reportKind = reportKindFromFlags(run);
+
+  loadEnv(path.join(ROOT, ".env"));
+  const webhook = process.env.WEWORK_WEBHOOK_URL;
+  if (!webhook) {
+    console.error("缺少 WEWORK_WEBHOOK_URL");
+    process.exit(1);
+  }
+
+  let mergedBlocks;
+  let lineCount;
+  try {
+    const r = await loadMergedBlocksFromDatabase(DATE_OLD, DATE_NEW, {
+      skipCompetitors: run.noCompetitors,
+      onlyProduct: run.onlyProduct,
+    });
+    mergedBlocks = r.mergedBlocks;
+    lineCount = r.lineCount;
+  } catch (e) {
+    console.error(e.message || e);
+    process.exit(1);
+  }
+
+  console.log(
+    `仅企业微信推送：${DATE_OLD} → ${DATE_NEW}，产品块 ${mergedBlocks.length} 个${run.onlyProduct ? `（仅 ${run.onlyProduct}）` : ""}${run.noCompetitors ? "（无竞品）" : ""}，维度 ${lineCount}`,
+  );
+
+  try {
+    await sendWeWorkWeekly(webhook, DATE_OLD, DATE_NEW, mergedBlocks, reportKind, {
+      skipSummary: !!run.onlyProduct,
+      compareTable: !!run.compareTable,
+      summaryOnly: !!run.summaryOnly,
+    });
+    console.log("企业微信推送完成");
+  } catch (e) {
+    console.error("企业微信推送失败:", e.message || e);
+    process.exit(1);
+  }
 }
 
 async function main() {
@@ -1316,18 +2490,20 @@ async function main() {
     await feishuOnlyMain();
     return;
   }
+  if (argvHasWeworkOnly()) {
+    await weworkOnlyMain();
+    return;
+  }
 
-  const argv = process.argv.slice(2).filter((a) => a !== "--no-feishu");
+  const argv = process.argv.slice(2).filter((a) => a !== "--no-feishu" && a !== "--no-wework");
   const noFeishu = process.argv.includes("--no-feishu");
+  const noWework = process.argv.includes("--no-wework");
+  const run = parseRunFlags(argv);
+  const { DATE_OLD, DATE_NEW } = resolveDateRangeFromArgs(run.rest, { daily: run.daily });
+  const reportKind = reportKindFromFlags(run);
 
-  let DATE_NEW;
-  let DATE_OLD;
-  if (argv[0] && /^\d{4}-\d{2}-\d{2}$/.test(argv[0])) {
-    DATE_NEW = argv[0];
-    DATE_OLD = argv[1] && /^\d{4}-\d{2}-\d{2}$/.test(argv[1]) ? argv[1] : addDays(DATE_NEW, -7);
-  } else {
-    DATE_NEW = getLastSunday();
-    DATE_OLD = addDays(DATE_NEW, -7);
+  if (run.weekly) {
+    console.warn("[周报] 双周流程已弱化，仅作兼容；默认已改为日报总结。勿传 --weekly 即走日报。");
   }
 
   loadEnv(path.join(ROOT, ".env"));
@@ -1337,12 +2513,21 @@ async function main() {
     process.exit(1);
   }
 
-  const list = JSON.parse(fs.readFileSync(APPID_US_JSON, "utf-8"));
+  let list = JSON.parse(fs.readFileSync(APPID_US_JSON, "utf-8"));
+  if (run.onlyProduct) {
+    const n = String(run.onlyProduct).trim();
+    list = list.filter((row) => String(row.internal_name) === n);
+    if (list.length === 0) {
+      console.error(`未找到 internal_name 为「${n}」的产品（appid_us.json）`);
+      process.exit(1);
+    }
+    console.log(`仅产品：${n}（含竞品维度）\n`);
+  }
 
   let flatQueries = [];
   let skipped = 0;
   for (const row of list) {
-    const qs = expandQueriesForApp(row);
+    const qs = expandQueriesForApp(row, { skipCompetitors: run.noCompetitors });
     if (qs.length === 0) {
       skipped++;
       continue;
@@ -1355,8 +2540,15 @@ async function main() {
     console.log(`维度去重：${beforeDedupe} → ${flatQueries.length}`);
   }
 
-  console.log(`日期：上上周日 ${DATE_OLD} → 上周日 ${DATE_NEW}`);
-  console.log(`展开维度条数：${flatQueries.length}（跳过无 summary 或无维度的产品：${skipped}）\n`);
+  if (run.daily) {
+    const tz = String(process.env.US_FREE_DAILY_CALENDAR_TZ || "America/Los_Angeles").trim() || "America/Los_Angeles";
+    console.log(`日期：日环比 ${DATE_OLD} → ${DATE_NEW}（相邻两日；日历时区 ${tz}）`);
+  } else {
+    console.log(`日期：上上周日 ${DATE_OLD} → 上周日 ${DATE_NEW}`);
+  }
+  console.log(
+    `展开维度条数：${flatQueries.length}（跳过无 summary 或无维度的产品：${skipped}${run.noCompetitors ? "；已跳过竞品" : ""}）\n`,
+  );
 
   if (flatQueries.length === 0) {
     console.error("没有可查询的维度，请检查 appid_us.json 中 us_free_category_ranking_summary");
@@ -1462,8 +2654,16 @@ async function main() {
       competitorParent: info.competitor_parent || null,
     });
   }
-  const mergedBlocks = mergeCompetitorBlocksIntoParents(productBlocks);
+  let mergedBlocks = mergeCompetitorBlocksIntoParents(productBlocks);
   assignInternalNameLabels(mergedBlocks);
+  if (run.onlyProduct) {
+    const fb = filterMergedBlocksToSingleProduct(mergedBlocks, run.onlyProduct);
+    if (!fb.length) {
+      console.error(`合并后未找到本品「${run.onlyProduct}」`);
+      process.exit(1);
+    }
+    mergedBlocks = fb;
+  }
   const summaryLines = [];
   for (const block of mergedBlocks) {
     const ids = block.ids;
@@ -1494,7 +2694,7 @@ async function main() {
     }
     summaryLines.push("");
   }
-  const summaryText = summaryLines.join("\n").trim();
+  const summaryText = (run.daily ? "【总结·日环比】\n" : "") + summaryLines.join("\n").trim();
   const lineCount = flatQueries.length;
 
   db.run(`INSERT INTO weekly_summaries (date_from, date_to, summary_text, product_count, line_count) VALUES (?, ?, ?, ?, ?)`, [
@@ -1507,7 +2707,11 @@ async function main() {
   fs.writeFileSync(DB_PATH, Buffer.from(db.export()));
   db.close();
 
-  const outTxt = path.join(ROOT, "data", `us_free_appid_weekly_${DATE_OLD}_${DATE_NEW}.txt`);
+  const outTxt = path.join(
+    ROOT,
+    "data",
+    run.daily ? `us_free_appid_daily_${DATE_OLD}_${DATE_NEW}.txt` : `us_free_appid_weekly_${DATE_OLD}_${DATE_NEW}.txt`,
+  );
   fs.writeFileSync(outTxt, summaryText + "\n", "utf-8");
   console.log(`\n简报已写: ${outTxt}`);
   console.log(`数据库: ${DB_PATH}`);
@@ -1518,10 +2722,32 @@ async function main() {
       console.warn("未配置 FEISHU_WEBHOOK_URL，跳过飞书（可用 --no-feishu 消除本提示）");
     } else {
       try {
-        await sendFeishuWeeklyCard(webhook, DATE_OLD, DATE_NEW, mergedBlocks, mergedBlocks.length, lineCount);
+        await sendFeishuWeeklyCard(webhook, DATE_OLD, DATE_NEW, mergedBlocks, mergedBlocks.length, lineCount, reportKind, {
+          skipSummary: !!run.onlyProduct,
+          compareTable: !!run.compareTable,
+          summaryOnly: !!run.summaryOnly,
+        });
         console.log("飞书推送完成");
       } catch (e) {
         console.error("飞书推送失败:", e.message);
+      }
+    }
+  }
+
+  const weworkHook = process.env.WEWORK_WEBHOOK_URL;
+  if (!noWework) {
+    if (!weworkHook) {
+      console.warn("未配置 WEWORK_WEBHOOK_URL，跳过企业微信（可用 --no-wework 消除本提示）");
+    } else {
+      try {
+        await sendWeWorkWeekly(weworkHook, DATE_OLD, DATE_NEW, mergedBlocks, reportKind, {
+          skipSummary: !!run.onlyProduct,
+          compareTable: !!run.compareTable,
+          summaryOnly: !!run.summaryOnly,
+        });
+        console.log("企业微信推送完成");
+      } catch (e) {
+        console.error("企业微信推送失败:", e.message);
       }
     }
   }
