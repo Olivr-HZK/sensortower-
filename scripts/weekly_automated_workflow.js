@@ -11,8 +11,10 @@
  *
  * 2) 本脚本执行步骤
  *    - 计算「本周一」日期（本地时间）。
- *    - 步骤 1/1：运行 workflow_week_rank_changes.js <本周一>
+ *    - 步骤 1/2：运行 workflow_week_rank_changes.js <本周一>
  *        → 拉取该周+上周的周日榜单、生成异动、拉 metadata、更新名称、拉下载/收益（当周周一~周日）、补全 publisher、生成 Top5 综述、US 免费榜商店页 metadata 变更检测，以及对“上一周榜单”做下架检测。
+ *    - 步骤 2/2：成功后再执行 send_sensortower_weekly_push.py --date <本周一>（飞书/企微 Markdown 周报）。
+ *        跳过推送：环境变量 SKIP_SENSORTOWER_WEEKLY_PUSH=1。指定 Python：SENSORTOWER_WEEKLY_PUSH_PYTHON 或 PYTHON。
  *
  * 3) 数据库
  *    - 默认使用 data/sensortower_top100.db（可通过环境变量 SENSORTOWER_DB_FILE 覆盖）。
@@ -80,6 +82,24 @@ function getThisMonday() {
   return `${year}-${month}-${dayOfMonth}`;
 }
 
+/** 用于 send_sensortower_weekly_push.py；cron 下 PATH 可能无 python3，故探测常见路径 */
+function resolvePythonForPush() {
+  const fromEnv = String(process.env.SENSORTOWER_WEEKLY_PUSH_PYTHON || process.env.PYTHON || '').trim();
+  if (fromEnv) return fromEnv;
+  const pathAug = ['/usr/local/bin', '/usr/bin', '/bin', '/opt/homebrew/bin', process.env.PATH].filter(Boolean).join(':');
+  try {
+    const out = execSync('command -v python3', {
+      encoding: 'utf8',
+      env: { ...process.env, PATH: pathAug },
+      shell: true,
+    }).trim();
+    if (out) return out;
+  } catch (_) {
+    /* ignore */
+  }
+  return 'python3';
+}
+
 /**
  * 执行命令并记录日志
  */
@@ -144,27 +164,42 @@ function main() {
   const monday = getThisMonday();
   log(`本周一日期: ${monday}`);
   
-  let successCount = 0;
-  let failCount = 0;
-  
   // 使用当前 Node 可执行路径，避免 cron 环境下 PATH 无 node 导致 command not found
   const nodePath = process.execPath;
 
+  const skipPush = process.env.SKIP_SENSORTOWER_WEEKLY_PUSH === '1';
+
   // 步骤 1: 执行完整周报工作流（Top100 + 异动 + metadata + 下载/收益 + Top5 综述 + 商店页变更 + 下架检测）
-  log('\n📊 步骤 1/1: 执行完整周报工作流');
+  log('\n📊 步骤 1/2: 执行完整周报工作流');
   const workflowSuccess = runCommand(
     '完整周报工作流',
     `"${nodePath}" workflow_week_rank_changes.js ${monday}`,
     DB_FILE
   );
-  
-  if (workflowSuccess) {
-    successCount++;
-  } else {
-    failCount++;
+
+  if (!workflowSuccess) {
     logError('完整周报工作流执行失败');
   }
-  
+
+  let pushSuccess = true;
+  if (workflowSuccess && !skipPush) {
+    const py = resolvePythonForPush();
+    const pushScript = path.join(ROOT, 'scripts', 'send_sensortower_weekly_push.py');
+    log('\n📨 步骤 2/2: SensorTower 周报推送（飞书/企微）');
+    pushSuccess = runCommand(
+      'SensorTower 周报推送',
+      `"${py}" "${pushScript}" --date ${monday}`,
+      null
+    );
+    if (!pushSuccess) {
+      logError('SensorTower 周报推送失败');
+    }
+  } else if (workflowSuccess && skipPush) {
+    log('\n⏭ 步骤 2/2: 已跳过周报推送（SKIP_SENSORTOWER_WEEKLY_PUSH=1）');
+  }
+
+  const pushLabel = skipPush ? 'SKIP' : pushSuccess ? 'OK' : 'FAIL';
+
   // 总结
   const endTime = Date.now();
   const duration = ((endTime - startTime) / 1000 / 60).toFixed(2);
@@ -173,13 +208,11 @@ function main() {
   log('每周自动工作流执行完成');
   log('='.repeat(60));
   log(`执行时间: ${duration} 分钟`);
-  log(`成功: ${successCount}/1`);
-  log(`失败: ${failCount}/1`);
+  log(`步骤 — 完整周报: ${workflowSuccess ? 'OK' : 'FAIL'}；周报推送: ${workflowSuccess ? pushLabel : '—'}`);
   log(`日志文件: ${LOG_FILE}`);
   log('='.repeat(60));
   
-  // 如果有失败，返回非零退出码
-  if (failCount > 0) {
+  if (!workflowSuccess || (workflowSuccess && !skipPush && !pushSuccess)) {
     process.exit(1);
   }
 }
