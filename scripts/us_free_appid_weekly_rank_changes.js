@@ -26,9 +26,10 @@
  *   node scripts/us_free_appid_weekly_rank_changes.js --compare-table
  *     与 `--only-product` 等组合：有竞品时横向对比本品与各竞品（**飞书单卡**用开放平台 **table 组件**；多产品折叠块内因平台限制仍用 Markdown 表；企微仍为 Markdown；无竞品则仍为折叠/列表）。
  *   node scripts/us_free_appid_weekly_rank_changes.js --no-competitors
- *     日报（默认）下跳过竞品维度；日环比仍由 `US_FREE_DAILY_CALENDAR_TZ` 决定。
+ *     日报（默认）下跳过竞品维度；**仅拉取 iOS（iPhone）与 Android 的「游戏总榜」免费维度**（6014+topfreeapplications / game+topselling_free）；无 summary 时 fallback 也只拉这两条总榜、不再五类全拉；日环比「昨天 vs 前天」由 `US_FREE_DAILY_CALENDAR_TZ` 决定（**默认北京时间 `Asia/Shanghai`**，可与美区对齐为 `America/Los_Angeles`）。
  *
  * 环境：SENSORTOWER_API_TOKEN（全量拉数）、FEISHU_WEBHOOK_URL（飞书推送）、WEWORK_WEBHOOK_URL（企业微信机器人 markdown）；
+ *       定时任务（cron）与本地一致：从项目根 `.env` 读取上述变量；更换 Webhook 地址只改 `.env`，勿写进 crontab。
  *       WEWORK_MARKDOWN_MAX_BYTES（可选，单条正文切分上限，默认 3800 字节，含序号后须 ≤4096）；
  *       SENSORTOWER_OVERVIEW_BASE（默认 https://app.sensortower-china.com）、
  *       ST_CHINA_OVERVIEW_PARENT_ID（可选，overview 路径中的 project_id）
@@ -111,7 +112,7 @@ function parseRunFlags(argv) {
   return o;
 }
 
-/** 某时区「今天」的日历日 YYYY-MM-DD（默认美西，与 US 商店日对齐；可用 US_FREE_DAILY_CALENDAR_TZ 覆盖） */
+/** 某时区「今天」的日历日 YYYY-MM-DD（默认北京时间；可用 `US_FREE_DAILY_CALENDAR_TZ` 覆盖，如美西 `America/Los_Angeles`） */
 function calendarDateYMDInTz(timeZone, date = new Date()) {
   return new Intl.DateTimeFormat("en-CA", {
     timeZone,
@@ -122,7 +123,7 @@ function calendarDateYMDInTz(timeZone, date = new Date()) {
 }
 
 function getDefaultDailyDateRange() {
-  const tz = String(process.env.US_FREE_DAILY_CALENDAR_TZ || "America/Los_Angeles").trim() || "America/Los_Angeles";
+  const tz = String(process.env.US_FREE_DAILY_CALENDAR_TZ || "Asia/Shanghai").trim() || "Asia/Shanghai";
   const today = calendarDateYMDInTz(tz);
   const dateNew = addDays(today, -1);
   const dateOld = addDays(dateNew, -1);
@@ -166,7 +167,10 @@ function loadEnv(filePath) {
     const i = t.indexOf("=");
     if (i < 0) continue;
     const k = t.slice(0, i).trim();
-    const v = t.slice(i + 1).trim();
+    let v = t.slice(i + 1).trim();
+    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
+      v = v.slice(1, -1);
+    }
     if (!process.env[k]) process.env[k] = v;
   }
 }
@@ -273,10 +277,30 @@ const FALLBACK_ANDROID_CATEGORY_ROWS = [
   { category: "game_puzzle", category_name: "Game/Puzzle" },
 ];
 
+/** 日报专用：仅 iOS iPhone 游戏总榜（6014）+ Android 游戏总榜（game） */
+function isDailyGameTotalFreeQuery(q) {
+  if (!q) return false;
+  const c = normalizeCategoryForIntro(q);
+  if (q.os === "android") {
+    return c === "game" && q.chart_type_ids && q.chart_type_ids[0] === "topselling_free";
+  }
+  if (q.os === "ios") {
+    return (
+      c === "6014" &&
+      q.device === "iphone" &&
+      q.chart_type_ids &&
+      q.chart_type_ids[0] === "topfreeapplications"
+    );
+  }
+  return false;
+}
+
 /**
  * subject：与 appid_us 一条产品或竞品行对应的展示字段；含 apple_app_id / google_app_id。
+ * @param {{ dailyTotalBoardsOnly?: boolean }} [opts] 为 true 时（日报）仅追加 iPhone Games 总榜 + Android Game 总榜各一条，不拉五类、不拉 iPad。
  */
-function pushFallbackQueriesForSubject(subject, sum, out) {
+function pushFallbackQueriesForSubject(subject, sum, out, opts) {
+  const dailyTotalBoardsOnly = !!(opts && opts.dailyTotalBoardsOnly);
   const base = {
     internal_name: subject.internal_name,
     product_code: subject.product_code,
@@ -288,6 +312,38 @@ function pushFallbackQueriesForSubject(subject, sum, out) {
     us_free_weekly_note: subject.us_free_weekly_note || null,
     competitorParent: subject.competitorParent != null ? subject.competitorParent : null,
   };
+
+  if (dailyTotalBoardsOnly) {
+    if (subject.apple_app_id) {
+      const aid = String(subject.apple_app_id);
+      out.push({
+        ...base,
+        q: {
+          os: "ios",
+          app_ids: [aid],
+          category: "6014",
+          chart_type_ids: ["topfreeapplications"],
+          device: "iphone",
+          category_name: "Games",
+        },
+      });
+    }
+    if (subject.google_app_id) {
+      const gid = String(subject.google_app_id);
+      out.push({
+        ...base,
+        q: {
+          os: "android",
+          app_ids: [gid],
+          category: "game",
+          chart_type_ids: ["topselling_free"],
+          device: "android",
+          category_name: "Game",
+        },
+      });
+    }
+    return;
+  }
 
   if (subject.apple_app_id) {
     const aid = String(subject.apple_app_id);
@@ -392,10 +448,11 @@ function pushQueriesFromSummary(subject, sum, out) {
 /**
  * 从 appid_us 一条记录展开为若干 q（优先 summary 中已有免费榜维度；若一条都没有则查 game/casual/board/card/puzzle 五类）。
  * 可选 competitors[]：与本品共用同一套 summary 维度，仅替换 apple_app_id / google_app_id；internal_name 为「本品名·竞品·竞品名」。
- * @param {{ skipCompetitors?: boolean }} [opts] skipCompetitors 为 true 时（如 `--daily`）不展开竞品。
+ * @param {{ skipCompetitors?: boolean, dailyTotalBoardsOnly?: boolean }} [opts] skipCompetitors 为 true 时（如 `--daily`）不展开竞品；dailyTotalBoardsOnly 为 true 时（日报）仅保留 iOS iPhone 游戏总榜 + Android 游戏总榜。
  */
 function expandQueriesForApp(row, opts) {
   const skipCompetitors = !!(opts && opts.skipCompetitors);
+  const dailyTotalBoardsOnly = !!(opts && opts.dailyTotalBoardsOnly);
   const sum = row.us_free_category_ranking_summary;
   if (!sum || sum.country !== "US") return [];
 
@@ -414,37 +471,40 @@ function expandQueriesForApp(row, opts) {
 
   pushQueriesFromSummary(selfSubject, sum, out);
   if (out.length === 0) {
-    pushFallbackQueriesForSubject(selfSubject, sum, out);
+    pushFallbackQueriesForSubject(selfSubject, sum, out, { dailyTotalBoardsOnly });
   }
 
-  if (skipCompetitors) return out;
+  if (!skipCompetitors) {
+    const comps = Array.isArray(row.competitors) ? row.competitors : [];
+    for (const comp of comps) {
+      const cname = String(comp.name || "").trim();
+      if (!cname) continue;
+      const apple = comp.apple_app_id != null && String(comp.apple_app_id).trim() !== "" ? String(comp.apple_app_id).trim() : null;
+      const google = comp.google_app_id != null && String(comp.google_app_id).trim() !== "" ? String(comp.google_app_id).trim() : null;
+      if (!apple && !google) continue;
 
-  const comps = Array.isArray(row.competitors) ? row.competitors : [];
-  for (const comp of comps) {
-    const cname = String(comp.name || "").trim();
-    if (!cname) continue;
-    const apple = comp.apple_app_id != null && String(comp.apple_app_id).trim() !== "" ? String(comp.apple_app_id).trim() : null;
-    const google = comp.google_app_id != null && String(comp.google_app_id).trim() !== "" ? String(comp.google_app_id).trim() : null;
-    if (!apple && !google) continue;
+      const compSubject = {
+        internal_name: `${row.internal_name}·竞品·${cname}`,
+        product_code: row.product_code,
+        display_name: cname,
+        apple_app_id: apple,
+        google_app_id: google,
+        st_overview_parent_id: row.st_overview_parent_id || null,
+        us_free_weekly_note: row.us_free_weekly_note || null,
+        competitorParent: row.internal_name,
+      };
 
-    const compSubject = {
-      internal_name: `${row.internal_name}·竞品·${cname}`,
-      product_code: row.product_code,
-      display_name: cname,
-      apple_app_id: apple,
-      google_app_id: google,
-      st_overview_parent_id: row.st_overview_parent_id || null,
-      us_free_weekly_note: row.us_free_weekly_note || null,
-      competitorParent: row.internal_name,
-    };
-
-    const before = out.length;
-    pushQueriesFromSummary(compSubject, sum, out);
-    if (out.length === before) {
-      pushFallbackQueriesForSubject(compSubject, sum, out);
+      const before = out.length;
+      pushQueriesFromSummary(compSubject, sum, out);
+      if (out.length === before) {
+        pushFallbackQueriesForSubject(compSubject, sum, out, { dailyTotalBoardsOnly });
+      }
     }
   }
 
+  if (dailyTotalBoardsOnly) {
+    return out.filter((item) => item.q && isDailyGameTotalFreeQuery(item.q));
+  }
   return out;
 }
 
@@ -745,14 +805,18 @@ function introRankDirectionForSummary(o, n) {
   return diff > 0 ? "up" : "down";
 }
 
-/** 游戏总榜摘要：含 iPhone / Android / iPad 三端变化条目 */
-function getGameTotalChangedEntriesForIntro(block) {
+/** 游戏总榜摘要：含 iPhone / Android / iPad 三端变化条目；`dailyTotalBoardsOnly` 时仅 iPhone Games 总榜 + Android Game 总榜 */
+function getGameTotalChangedEntriesForIntro(block, opts) {
   const entries = (block.rankEntries || []).filter((e) => isGameTotalBoardQuery(e.q));
-  const changed = entries.filter((e) => introGameEntryHasChange(e.oldRank, e.newRank));
-  return changed.filter((e) => {
+  let changed = entries.filter((e) => introGameEntryHasChange(e.oldRank, e.newRank));
+  changed = changed.filter((e) => {
     const t = introPlatformTag(e.q);
     return t === "ios" || t === "android" || t === "ipad";
   });
+  if (opts && opts.dailyTotalBoardsOnly) {
+    changed = changed.filter((e) => isDailyGameTotalFreeQuery(e.q));
+  }
+  return changed;
 }
 
 /**
@@ -790,13 +854,16 @@ function buildIntroProductHeadLine(block, opts) {
  * @param {{ plainText?: boolean, htmlColors?: boolean }} [opts] 折叠标题 plain_text 时 true（无颜色标签，仅 +/−）
  */
 function buildIosAndroidGameTotalParen(block, opts) {
-  return buildIosAndroidParenFromEntries(getGameTotalChangedEntriesForIntro(block), opts);
+  return buildIosAndroidParenFromEntries(getGameTotalChangedEntriesForIntro(block, opts), opts);
 }
 
-/** 顶部摘要是否展示：ios / android / iPad 任一端游戏总榜有变化即展示 */
-function productHasGameTotalIntroChange(block) {
+/** 顶部摘要是否展示：ios / android / iPad 任一端游戏总榜有变化即展示；日报仅 iPhone/Android 游戏总榜两维 */
+function productHasGameTotalIntroChange(block, opts) {
   const entries = (block.rankEntries || []).filter((e) => isGameTotalBoardQuery(e.q));
   return entries.some((e) => {
+    if (opts && opts.dailyTotalBoardsOnly) {
+      if (!isDailyGameTotalFreeQuery(e.q)) return false;
+    }
     const t = introPlatformTag(e.q);
     if (t !== "ios" && t !== "android" && t !== "ipad") return false;
     return introGameEntryHasChange(e.oldRank, e.newRank);
@@ -1174,18 +1241,23 @@ function buildWeWorkCompareBlockMarkdown(block, dateOld, dateNew) {
 }
 
 /**
- * @param {{ htmlColors?: boolean, feishuSummaryMinimal?: boolean, weWorkIntro?: boolean }} [opts]
+ * @param {{ htmlColors?: boolean, feishuSummaryMinimal?: boolean, weWorkIntro?: boolean, dailyTotalBoardsOnly?: boolean }} [opts]
  *   `feishuSummaryMinimal`：飞书「总结」首条专用——无「游戏总榜…有变化产品」标题、无红绿/上升下降说明，仅保留 **上升** / **下降** 与产品行（或兜底列表）。
  *   `weWorkIntro`：企微日报产品行前缀与链接样式，见 buildIntroProductHeadLine
+ *   `dailyTotalBoardsOnly`：日报仅 iOS（iPhone）与 Android 游戏总榜两维
  */
 function buildTotalBoardChangedIntroMarkdown(productBlocks, opts) {
   const htmlColors = !opts || opts.htmlColors !== false;
   const feishuSummaryMinimal = !!(opts && opts.feishuSummaryMinimal);
+  const dailyTotalBoardsOnly = !!(opts && opts.dailyTotalBoardsOnly);
   const introLineOpts = opts || {};
-  const parenOpts = { htmlColors };
-  const qual = productBlocks.filter((b) => productHasGameTotalIntroChange(b));
+  const parenOpts = { htmlColors, dailyTotalBoardsOnly };
+  const qual = productBlocks.filter((b) => productHasGameTotalIntroChange(b, opts));
   const sorted = sortBlocksByLabel(qual);
   if (sorted.length === 0) {
+    if (feishuSummaryMinimal && dailyTotalBoardsOnly) {
+      return "iOS（iPhone）与 Android 游戏总榜无可用变化摘要。";
+    }
     return feishuSummaryMinimal
       ? "游戏总榜无可用变化摘要；其他分榜见**单独**消息。"
       : "**ios / android / iPad** 游戏总榜均无可用变化；其他分榜见**单独**消息或折叠块，按首字母排序。";
@@ -1193,7 +1265,7 @@ function buildTotalBoardChangedIntroMarkdown(productBlocks, opts) {
   const upLines = [];
   const downLines = [];
   for (const b of sorted) {
-    const raw = getGameTotalChangedEntriesForIntro(b);
+    const raw = getGameTotalChangedEntriesForIntro(b, opts);
     const up = [];
     const down = [];
     for (const e of raw) {
@@ -1206,7 +1278,9 @@ function buildTotalBoardChangedIntroMarkdown(productBlocks, opts) {
     if (down.length) downLines.push(head + buildIosAndroidParenFromEntries(down, parenOpts));
   }
   const intro =
-    "**游戏总榜（ios / android / iPad）** · 有变化产品（按首字母）\n\n" +
+    (dailyTotalBoardsOnly
+      ? "**游戏总榜（iPhone · Android）** · 有变化产品（按首字母）\n\n"
+      : "**游戏总榜（ios / android / iPad）** · 有变化产品（按首字母）\n\n") +
     (htmlColors
       ? "分 **上升** / **下降** 两块；**红（+）**/**绿（−）** 与明细同一套「旧名次 − 新名次」约定；同一产品若各端走势不同会各出现一行。"
       : "分 **上升** / **下降** 两块；（+）/（−）与明细同一套「旧名次 − 新名次」约定；同一产品若各端走势不同会各出现一行。");
@@ -1734,10 +1808,11 @@ function buildDailySummaryBodyMarkdown(productBlocks, opts) {
     feishuSummaryMinimal: true,
     htmlColors: !wework,
     weWorkIntro: wework,
+    dailyTotalBoardsOnly: true,
   });
 }
 
-/** 飞书/企微头栏：统计范围说明 */
+/** 飞书/企微头栏：统计范围说明（日报与周报共用） */
 const US_FREE_CHART_SCOPE_MARKDOWN = "**统计口径** · 仅统计各维度入围前 500 名的本公司产品。";
 
 /** 飞书日报：仅一条总结；无 note 页脚；标题固定不含日期 */
@@ -1746,7 +1821,7 @@ function buildFeishuDailySummaryCard(dateOld, dateNew, summaryMarkdown) {
   elements.push({
     tag: "markdown",
     content: [
-      "**📍 美国 US** · 免费榜（iPhone / iPad / Android）",
+      "**📍 美国 US** · 免费榜（iOS/Android）",
       "",
       US_FREE_CHART_SCOPE_MARKDOWN,
       "",
@@ -1961,7 +2036,11 @@ function buildWeWorkMarkdown(dateOld, dateNew, productBlocks, reportKind, opts) 
     lines.push(`## 公司自有产品 · SensorTower US 免费榜 ${dateOld}～${dateNew}`);
   }
   lines.push("");
-  lines.push("**📍 美国 US** · 免费榜（iPhone / iPad / Android）");
+  lines.push(
+    kind === "daily"
+      ? "**📍 美国 US** · 免费榜（iOS/Android）"
+      : "**📍 美国 US** · 免费榜（iPhone / iPad / Android）",
+  );
   lines.push("");
   lines.push(US_FREE_CHART_SCOPE_MARKDOWN);
   lines.push("");
@@ -2267,11 +2346,12 @@ async function sendFeishuWeeklyCard(webhookUrl, dateOld, dateNew, productBlocks,
 
 /**
  * 从 appid_us.json + 本地 DB 两期 rank 重建 mergedBlocks（不调 SensorTower API）
- * @param {{ skipCompetitors?: boolean, onlyProduct?: string|null }} [opts]
+ * @param {{ skipCompetitors?: boolean, onlyProduct?: string|null, dailyTotalBoardsOnly?: boolean }} [opts]
  * @returns {{ mergedBlocks: Array, lineCount: number }}
  */
 async function loadMergedBlocksFromDatabase(DATE_OLD, DATE_NEW, opts) {
   const skipCompetitors = !!(opts && opts.skipCompetitors);
+  const dailyTotalBoardsOnly = !!(opts && opts.dailyTotalBoardsOnly);
   const onlyProduct = opts && opts.onlyProduct ? String(opts.onlyProduct).trim() : "";
   let list = JSON.parse(fs.readFileSync(APPID_US_JSON, "utf-8"));
   if (onlyProduct) {
@@ -2283,7 +2363,7 @@ async function loadMergedBlocksFromDatabase(DATE_OLD, DATE_NEW, opts) {
 
   let flatQueries = [];
   for (const row of list) {
-    const qs = expandQueriesForApp(row, { skipCompetitors });
+    const qs = expandQueriesForApp(row, { skipCompetitors, dailyTotalBoardsOnly });
     if (qs.length === 0) continue;
     flatQueries.push(...qs);
   }
@@ -2294,7 +2374,11 @@ async function loadMergedBlocksFromDatabase(DATE_OLD, DATE_NEW, opts) {
   }
 
   if (flatQueries.length === 0) {
-    throw new Error("没有可展开的维度，请检查 appid_us.json");
+    throw new Error(
+      dailyTotalBoardsOnly
+        ? "没有可展开的维度（日报仅游戏总榜：需 apple_app_id 与/或 google_app_id，且 summary 或 fallback 能展开）"
+        : "没有可展开的维度，请检查 appid_us.json",
+    );
   }
 
   if (!fs.existsSync(DB_PATH)) {
@@ -2420,6 +2504,7 @@ async function feishuOnlyMain() {
     const r = await loadMergedBlocksFromDatabase(DATE_OLD, DATE_NEW, {
       skipCompetitors: run.noCompetitors,
       onlyProduct: run.onlyProduct,
+      dailyTotalBoardsOnly: run.daily,
     });
     mergedBlocks = r.mergedBlocks;
     lineCount = r.lineCount;
@@ -2429,7 +2514,7 @@ async function feishuOnlyMain() {
   }
 
   console.log(
-    `仅飞书推送：${DATE_OLD} → ${DATE_NEW}，折叠块 ${mergedBlocks.length} 个${run.onlyProduct ? `（仅 ${run.onlyProduct}）` : ""}${run.noCompetitors ? "（无竞品）" : "（含竞品已并入本品）"}，维度 ${lineCount}`,
+    `仅飞书推送：${DATE_OLD} → ${DATE_NEW}，折叠块 ${mergedBlocks.length} 个${run.onlyProduct ? `（仅 ${run.onlyProduct}）` : ""}${run.noCompetitors ? "（无竞品）" : "（含竞品已并入本品）"}${run.daily ? "（日报仅游戏总榜 iPhone+Android）" : ""}，维度 ${lineCount}`,
   );
 
   await sendFeishuWeeklyCard(webhook, DATE_OLD, DATE_NEW, mergedBlocks, mergedBlocks.length, lineCount, reportKind, {
@@ -2460,6 +2545,7 @@ async function weworkOnlyMain() {
     const r = await loadMergedBlocksFromDatabase(DATE_OLD, DATE_NEW, {
       skipCompetitors: run.noCompetitors,
       onlyProduct: run.onlyProduct,
+      dailyTotalBoardsOnly: run.daily,
     });
     mergedBlocks = r.mergedBlocks;
     lineCount = r.lineCount;
@@ -2469,7 +2555,7 @@ async function weworkOnlyMain() {
   }
 
   console.log(
-    `仅企业微信推送：${DATE_OLD} → ${DATE_NEW}，产品块 ${mergedBlocks.length} 个${run.onlyProduct ? `（仅 ${run.onlyProduct}）` : ""}${run.noCompetitors ? "（无竞品）" : ""}，维度 ${lineCount}`,
+    `仅企业微信推送：${DATE_OLD} → ${DATE_NEW}，产品块 ${mergedBlocks.length} 个${run.onlyProduct ? `（仅 ${run.onlyProduct}）` : ""}${run.noCompetitors ? "（无竞品）" : ""}${run.daily ? "（日报仅游戏总榜 iPhone+Android）" : ""}，维度 ${lineCount}`,
   );
 
   try {
@@ -2527,7 +2613,10 @@ async function main() {
   let flatQueries = [];
   let skipped = 0;
   for (const row of list) {
-    const qs = expandQueriesForApp(row, { skipCompetitors: run.noCompetitors });
+    const qs = expandQueriesForApp(row, {
+      skipCompetitors: run.noCompetitors,
+      dailyTotalBoardsOnly: run.daily,
+    });
     if (qs.length === 0) {
       skipped++;
       continue;
@@ -2541,8 +2630,8 @@ async function main() {
   }
 
   if (run.daily) {
-    const tz = String(process.env.US_FREE_DAILY_CALENDAR_TZ || "America/Los_Angeles").trim() || "America/Los_Angeles";
-    console.log(`日期：日环比 ${DATE_OLD} → ${DATE_NEW}（相邻两日；日历时区 ${tz}）`);
+    const tz = String(process.env.US_FREE_DAILY_CALENDAR_TZ || "Asia/Shanghai").trim() || "Asia/Shanghai";
+    console.log(`日期：日环比 ${DATE_OLD} → ${DATE_NEW}（相邻两日；日历时区 ${tz}；**日报仅 iOS/Android 游戏总榜**）`);
   } else {
     console.log(`日期：上上周日 ${DATE_OLD} → 上周日 ${DATE_NEW}`);
   }

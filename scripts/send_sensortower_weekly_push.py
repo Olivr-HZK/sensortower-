@@ -713,13 +713,49 @@ def _split_sensortower_for_wecom(md: str) -> list[str]:
 
 
 
+def _use_test_webhooks() -> bool:
+    return os.environ.get("SENSORTOWER_PUSH_USE_TEST", "").strip().lower() in ("1", "true", "yes")
+
+
+def _webhook_feishu() -> str | None:
+    if _use_test_webhooks():
+        return _clean_url(
+            os.environ.get("FEISHU_WEBHOOK_URL_TEST")
+            or os.environ.get("FEISHU_WEBHOOK_URL_Test")
+        ) or _clean_url(os.environ.get("FEISHU_WEBHOOK_URL"))
+    return _clean_url(os.environ.get("FEISHU_WEBHOOK_URL"))
+
+
+def _webhook_wecom() -> str | None:
+    if _use_test_webhooks():
+        explicit = os.environ.get("WECOM_WEBHOOK_URL_TEST") or os.environ.get("WEWORK_WEBHOOK_URL_TEST")
+        u = (
+            _clean_url(explicit)
+            or _clean_url(os.environ.get("WECOM_WEBHOOK_URL_REAL"))
+            or _clean_url(os.environ.get("WECOM_WEBHOOK_URL"))
+            or _clean_url(os.environ.get("WEWORK_WEBHOOK_URL"))
+        )
+        if u and not explicit:
+            print(
+                "[企微] 测试模式未配置 WEWORK_WEBHOOK_URL_TEST，已回退到 WEWORK_WEBHOOK_URL",
+                file=sys.stderr,
+            )
+        return u
+    return (
+        _clean_url(os.environ.get("WECOM_WEBHOOK_URL_REAL"))
+        or _clean_url(os.environ.get("WECOM_WEBHOOK_URL"))
+        or _clean_url(os.environ.get("WEWORK_WEBHOOK_URL"))
+    )
+
+
 def push_game_weekly_message(title: str, body_feishu: str, body_wecom: str | None = None) -> None:
     """根据标题与内容发送到已配置的飞书/企微（SensorTower 标题会拆多条企微）。"""
-    feishu = _clean_url(os.environ.get("FEISHU_WEBHOOK_URL"))
-    wecom = _clean_url(os.environ.get("WECOM_WEBHOOK_URL_REAL")) or _clean_url(os.environ.get("WECOM_WEBHOOK_URL"))
+    feishu = _webhook_feishu()
+    wecom = _webhook_wecom()
     if not feishu and not wecom:
         print(
-            "未配置 Webhook。请在 .env 中设置 FEISHU_WEBHOOK_URL 或 WECOM_WEBHOOK_URL_REAL（或 WECOM_WEBHOOK_URL）",
+            "未配置 Webhook。请在 .env 中设置 FEISHU_WEBHOOK_URL 或 WECOM_WEBHOOK_URL / WEWORK_WEBHOOK_URL"
+            "（测试：SENSORTOWER_PUSH_USE_TEST=1 且 FEISHU_WEBHOOK_URL_Test 等）",
             file=sys.stderr,
         )
         raise SystemExit(1)
@@ -736,13 +772,34 @@ def push_game_weekly_message(title: str, body_feishu: str, body_wecom: str | Non
 def main() -> int:
     import argparse
     parser = argparse.ArgumentParser(description="从 sensortower_top100.db 推送 SensorTower 周报")
-    parser.add_argument("--db", type=Path, default=Path("public/sensortower_top100.db"))
+    parser.add_argument(
+        "--db",
+        type=Path,
+        default=None,
+        help="SQLite 路径，默认仓库内 data/sensortower_top100.db（若存在）否则 public/sensortower_top100.db",
+    )
     parser.add_argument("--date", type=str, default=None, metavar="YYYY-MM-DD")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--use-test-webhooks",
+        action="store_true",
+        help="使用测试 Webhook：读 FEISHU_WEBHOOK_URL_Test / FEISHU_WEBHOOK_URL_TEST；企微优先 WEWORK_WEBHOOK_URL_TEST",
+    )
     args = parser.parse_args()
     repo_root = Path(__file__).resolve().parents[1]
     _load_env(repo_root)
-    db_path = repo_root / args.db if not args.db.is_absolute() else args.db
+    if args.use_test_webhooks:
+        os.environ["SENSORTOWER_PUSH_USE_TEST"] = "1"
+    if args.db is None:
+        for candidate in ("data/sensortower_top100.db", "public/sensortower_top100.db"):
+            p = repo_root / candidate
+            if p.is_file():
+                db_path = p
+                break
+        else:
+            db_path = repo_root / "data/sensortower_top100.db"
+    else:
+        db_path = repo_root / args.db if not args.db.is_absolute() else args.db
     if not db_path.exists():
         print(f"[错误] 数据库不存在：{db_path}", file=sys.stderr)
         return 1

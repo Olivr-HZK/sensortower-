@@ -23,6 +23,7 @@ logs/*.log
 Thumbs.db
 
 # IDE 文件
+.cursor/
 .vscode/
 .idea/
 *.swp
