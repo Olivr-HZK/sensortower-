@@ -13,6 +13,11 @@
 #   → 按 data/appid_us.json 配置拉 SensorTower 排名写入 data/us_free_appid_weekly.db，并推送飞书/企微（日环比）
 #   调度覆盖：环境变量 US_FREE_DAILY_CRON（默认 0 10 * * *）；日历时区见脚本内 US_FREE_DAILY_CALENDAR_TZ
 #
+# 第三条（每日本品+竞品，默认 10:05）：本脚本不写入，请单独执行
+#   bash scripts/setup_arrow_madness_daily_cron.sh
+#   或 npm run setup-arrow-madness-daily-cron
+#   说明见 docs/THREE_WORKFLOWS.md
+#
 # 用法：
 #   bash scripts/setup_cron.sh                    # 周 + 日都写入（已存在则分别询问是否替换；YES=1 非交互全替换）
 #   bash scripts/setup_cron.sh --weekly-only

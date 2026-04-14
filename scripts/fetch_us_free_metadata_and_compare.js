@@ -262,12 +262,41 @@ function normalizeForCompare(val) {
   return s.trim();
 }
 
+/**
+ * 标准化截图列表用于比较：
+ * - 兼容标准 JSON 数组字符串：["u1","u2"]
+ * - 兼容非标准数组字符串：[u1,u2]
+ * - 忽略顺序与空白，仅比较 URL 集合
+ */
+function normalizeScreenshotList(val) {
+  if (val === null || val === undefined) return '';
+  const s = String(val).trim();
+  if (!s) return '';
+
+  let items = [];
+  try {
+    const parsed = JSON.parse(s);
+    if (Array.isArray(parsed)) items = parsed.map((x) => String(x || '').trim());
+  } catch (_) {
+    const body = s.startsWith('[') && s.endsWith(']') ? s.slice(1, -1) : s;
+    items = body
+      .split(',')
+      .map((x) => x.trim().replace(/^["']|["']$/g, ''))
+      .filter(Boolean);
+  }
+
+  const uniqSorted = [...new Set(items)].sort();
+  return JSON.stringify(uniqSorted);
+}
+
 /** 比较当前与上周快照，返回有变化的字段及 old/new */
 function diffStorePage(current, last) {
   const changed = {};
   for (const k of STORE_PAGE_FIELDS) {
-    const cur = normalizeForCompare(current[k]);
-    const prev = last ? normalizeForCompare(last[k]) : '';
+    const cur = k === 'screenshot_urls' ? normalizeScreenshotList(current[k]) : normalizeForCompare(current[k]);
+    const prev = last
+      ? (k === 'screenshot_urls' ? normalizeScreenshotList(last[k]) : normalizeForCompare(last[k]))
+      : '';
     if (cur !== prev) {
       changed[k] = { old: last ? last[k] : null, new: current[k] };
     }
@@ -359,6 +388,8 @@ async function main() {
 
   ensureSnapshotTable();
   ensureChangesTable();
+  // 同一周允许重跑：先清理该周历史变化，避免重复累计或旧误报残留
+  runSql(`DELETE FROM weekly_metadata_changes WHERE rank_date = ${escapeSqlValue(thisMonday)};`, true);
 
   const authToken = loadEnvToken();
 

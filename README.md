@@ -233,6 +233,7 @@ npm run us-free-weekly
 
 ## 文档
 
+- [三条工作流说明（每周 Top100 / 每日我方总榜 / 每日竞品）](docs/THREE_WORKFLOWS.md)
 - [周报工作流详解](docs/WEEKLY_WORKFLOW.md)
 - [自动化与定时任务](docs/AUTOMATED_WORKFLOW.md)
 - [使用指南（Top100 / 异动）](docs/USAGE_GUIDE.md)

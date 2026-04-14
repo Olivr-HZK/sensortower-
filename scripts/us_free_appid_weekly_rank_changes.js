@@ -43,6 +43,7 @@ const path = require("path");
 const https = require("https");
 const initSqlJs = require("sql.js");
 const { getRankFromData } = require("../arrow_madness_rank_parse.js");
+const { walkFeishuInteractivePayload } = require("./feishu_shrink_inline_images.js");
 
 const ROOT = path.join(__dirname, "..");
 const APPID_US_JSON = path.join(ROOT, "data", "appid_us.json");
@@ -198,9 +199,10 @@ function addDays(ymd, delta) {
   return `${yy}-${mm}-${dd}`;
 }
 
-/** 与 Arrow Madness 一致：ios/ipad/android + 游戏 + 子类；Android category_id=all 为「平台-总榜」（无「游戏」段） */
+/** 与 Arrow Madness 一致：iOS/iPad/Android + 游戏 + 子类；Android category_id=all 为「平台-总榜」（无「游戏」段） */
 function rankCompactLabel(q) {
-  const plat = q.os === "ios" ? (q.device === "iphone" ? "ios" : "ipad") : "android";
+  const plat =
+    q.os === "ios" ? (q.device === "iphone" ? "iOS" : "iPad") : "Android";
   let c = String(q.category);
   const m = /^category_(\d+)$/.exec(c);
   if (m) c = m[1];
@@ -533,12 +535,16 @@ function productGroupKey(item) {
 }
 
 /**
- * 飞书/链接展示名：优先 internal_name；重复 internal_name 时 feishuLabel 为 name1、name2…
- * （由 assignInternalNameLabels 写入 block.feishuLabel）
+ * 飞书/链接展示名：优先 display_name（对外名称）；重名时保留 feishuLabel（由 assignInternalNameLabels 写入）
  */
 function linkTitleForProduct(block) {
-  if (block.feishuLabel) return String(block.feishuLabel).trim();
-  return String(block.internalName || "").trim() || String(block.displayName || "").trim();
+  const int = String(block.internalName || "").trim();
+  const lbl = block.feishuLabel != null ? String(block.feishuLabel).trim() : "";
+  if (lbl && int && lbl !== int) return lbl;
+  const d = String(block.displayName || "").trim();
+  if (d) return d;
+  if (lbl) return lbl;
+  return int || "产品";
 }
 
 /** 同一 internal_name 多条时标题为 name1、name2…；仅一条时不加后缀 */
@@ -1056,24 +1062,24 @@ function buildRankComparisonTableMarkdown(block, opts) {
   return lines.join("\n");
 }
 
-function buildProductQuickLinksLine(block, isMain, stUrlOpts) {
+function buildProductQuickLinksLine(block, stUrlOpts) {
   const ids = block.ids || {};
   const st = sensorTowerUrlForIds(ids, stUrlOpts);
   const name = linkTitleForProduct(block);
-  const parts = [];
-  if (st) parts.push(`[${escapeMdLinkLabel(name)}](${st})`);
-  else parts.push(escapeMdLinkLabel(name));
-  if (ids.apple_app_id) parts.push(`[Apple](${appleStoreUrl(ids.apple_app_id)})`);
-  if (ids.google_app_id) parts.push(`[Google](${googlePlayUrl(ids.google_app_id)})`);
-  const role = isMain ? "本品" : "竞品";
-  return `- **${role}** · ${parts.join("  ")}`;
+  const nameMd = st
+    ? `[${escapeMdLinkLabel(name)}](${st})`
+    : escapeMdLinkLabel(name);
+  const linkParts = [];
+  if (ids.apple_app_id) linkParts.push(`[Apple](${appleStoreUrl(ids.apple_app_id)})`);
+  if (ids.google_app_id) linkParts.push(`[Google](${googlePlayUrl(ids.google_app_id)})`);
+  return `- ${nameMd}  ${linkParts.join("  ")}`;
 }
 
 function buildCompareTableLinksSection(block, opts) {
   const stUrlOpts = opts && opts.wework ? { omitProjectId: true } : undefined;
-  const out = [buildProductQuickLinksLine(block, true, stUrlOpts)];
+  const out = [buildProductQuickLinksLine(block, stUrlOpts)];
   for (const c of block.competitorPanels || []) {
-    out.push(buildProductQuickLinksLine(c, false, stUrlOpts));
+    out.push(buildProductQuickLinksLine(c, stUrlOpts));
   }
   return out.join("\n");
 }
@@ -1088,12 +1094,12 @@ function buildFeishuCompareTableIntroMarkdown(block, dateOld, dateNew) {
   lines.push(
     "**📍 美国 US** · 免费榜（iPhone / iPad / Android）",
     "",
-    `**环比** · ${dateOld} → ${dateNew}`,
+    `**对比区间** · ${dateOld} → ${dateNew}`,
     "",
-    "**快捷链接**",
+    "**相关链接**",
     buildCompareTableLinksSection(block),
     "",
-    "**产品与竞品对比**（飞书表格组件；首列冻结；单元格为旧名次-新名次，括号内为名次差；需客户端 ≥7.4）",
+    "**排名变化详情**",
   );
   return lines.join("\n");
 }
@@ -1197,12 +1203,12 @@ function buildFeishuCompareBlockMarkdown(block, dateOld, dateNew) {
     lines.push(`**备注** · ${block.weeklySummaryNote}`);
     lines.push("");
   }
-  lines.push(`**环比** · ${dateOld} → ${dateNew}`);
+  lines.push(`**对比区间** · ${dateOld} → ${dateNew}`);
   lines.push("");
-  lines.push("**快捷链接**");
+  lines.push("**相关链接**");
   lines.push(buildCompareTableLinksSection(block));
   lines.push("");
-  lines.push("**对比表**");
+  lines.push("**下表**为各产品与榜单维度的排名对比（Markdown 表）");
   lines.push("");
   lines.push(buildRankComparisonTableMarkdown(block, { channel: "feishu" }));
   return lines.join("\n");
@@ -1214,10 +1220,10 @@ function buildWeWorkCompareTableMarkdown(block, dateOld, dateNew) {
     lines.push(`**备注** · ${block.weeklySummaryNote}`);
     lines.push("");
   }
-  lines.push("**快捷链接**");
+  lines.push("**相关链接**");
   lines.push(buildCompareTableLinksSection(block, { wework: true }));
   lines.push("");
-  lines.push("**产品与竞品对比**（同行为同一榜单维度；单元格为旧名次-新名次）");
+  lines.push("**下表**为各产品与榜单维度的排名对比；同行为同一榜单维度；单元格为「旧名次-新名次」");
   lines.push("");
   lines.push(buildRankComparisonTableMarkdown(block, { channel: "wework" }));
   return lines.join("\n");
@@ -1229,12 +1235,12 @@ function buildWeWorkCompareBlockMarkdown(block, dateOld, dateNew) {
     lines.push(`**备注** · ${block.weeklySummaryNote}`);
     lines.push("");
   }
-  lines.push(`**环比** · ${dateOld} → ${dateNew}`);
+  lines.push(`**对比区间** · ${dateOld} → ${dateNew}`);
   lines.push("");
-  lines.push("**快捷链接**");
+  lines.push("**相关链接**");
   lines.push(buildCompareTableLinksSection(block, { wework: true }));
   lines.push("");
-  lines.push("**对比表**");
+  lines.push("**下表**为各产品与榜单维度的排名对比（Markdown 表）");
   lines.push("");
   lines.push(buildRankComparisonTableMarkdown(block, { channel: "wework" }));
   return lines.join("\n");
@@ -1642,7 +1648,7 @@ function buildFeishuNoteFooterElements(role) {
       elements: [
         {
           tag: "plain_text",
-          content: `US Free · ${cn} · ${new Date().toLocaleString("zh-CN", {
+          content: `SensorTower US 免费榜 · ${cn} · ${new Date().toLocaleString("zh-CN", {
             timeZone: "Asia/Shanghai",
             hour12: false,
           })}`,
@@ -1897,7 +1903,7 @@ function buildFeishuWeeklyDetailCard(dateOld, dateNew, productBlocks, opts) {
     if (compareTable && singleParentWithComps) {
       elements.push({
         tag: "markdown",
-        content: "**📋 各维度对比**（表格；行=同榜维度，列=本品与竞品）",
+        content: "**📋 各维度对比**（表格；行=同榜维度，列=各产品）",
       });
     } else {
       elements.push({
@@ -1914,7 +1920,9 @@ function buildFeishuWeeklyDetailCard(dateOld, dateNew, productBlocks, opts) {
     });
     elements.push(buildFeishuRankComparisonTableElement(sortedBlocks[0]));
     elements.push(...buildFeishuNoteFooterElements("standalone"));
-    const title = `公司自有产品 SensorTower US 免费榜排名变化 ${dateOld}～${dateNew} · 对比表`;
+    const mainName = String(linkTitleForProduct(sortedBlocks[0]) || "").trim() || "产品";
+    let title = `${mainName} · SensorTower US 免费榜 · 排名对比 ${dateOld}～${dateNew}`;
+    if (title.length > 200) title = `${title.slice(0, 197)}…`;
     return {
       msg_type: "interactive",
       card: {
@@ -2229,6 +2237,7 @@ async function sendWeWorkWeekly(webhookUrl, dateOld, dateNew, productBlocks, rep
 }
 
 function sendFeishuMessage(webhookUrl, cardPayload) {
+  walkFeishuInteractivePayload(cardPayload);
   return new Promise((resolve, reject) => {
     const url = new URL(webhookUrl);
     const body = JSON.stringify(cardPayload);

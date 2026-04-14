@@ -2,6 +2,7 @@ const fs = require("fs");
 const https = require("https");
 const initSqlJs = require("sql.js");
 const { getRankFromData } = require("./arrow_madness_rank_parse.js");
+const { walkFeishuInteractivePayload } = require("./scripts/feishu_shrink_inline_images.js");
 
 const ROOT = __dirname.includes("scripts") ? require("path").join(__dirname, "..") : __dirname;
 
@@ -116,6 +117,7 @@ function callCategoryHistoryApi(q, date) {
 }
 
 function sendFeishuMessage(webhookUrl, cardPayload) {
+  walkFeishuInteractivePayload(cardPayload);
   return new Promise((resolve, reject) => {
     const url = new URL(webhookUrl);
     const body = JSON.stringify(cardPayload);

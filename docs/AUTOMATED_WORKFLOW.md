@@ -2,7 +2,8 @@
 
 ## 📋 概述
 
-本文档说明如何设置每周一早上 10:30 自动执行完整工作流和商店信息爬取。
+本文档说明如何设置 **每周一** 自动执行 `weekly_automated_workflow.js`（完整 Top100 周报工作流 + 飞书/企微推送）。  
+三条管线总览（含两条每日任务）见 [THREE_WORKFLOWS.md](THREE_WORKFLOWS.md)。
 
 ---
 
@@ -20,8 +21,8 @@ bash scripts/setup_cron.sh
 
 脚本会自动：
 - 检测 Node.js 路径
-- 创建 cron 任务
-- 设置每周一早上 10:30 执行
+- 创建 cron 任务：默认 **每周一 10:30** 跑周报，**每天 10:00** 跑「我方产品 US 免费榜日报」（`--daily --no-competitors`）
+- 第三条「每日本品 + 竞品」需另行执行 `bash scripts/setup_arrow_madness_daily_cron.sh` 或 `npm run setup-arrow-madness-daily-cron`，见 [THREE_WORKFLOWS.md](THREE_WORKFLOWS.md)
 
 ---
 
@@ -46,27 +47,17 @@ crontab -e
 
 **功能**：
 1. 自动计算「本周一」日期
-2. 执行完整周报工作流（`workflow_week_rank_changes.js <本周一>`）：榜单 API 用周日、下载/收益用当周周一~周日，库中仍以周一为周标识
-3. 执行商店信息爬取和变更检测（`weekly_us_free_top100_storeinfo.js --date <本周一>`）
-4. 记录详细日志
+2. **步骤 1/2**：执行 `workflow_week_rank_changes.js <本周一>`（内部共 8 子步骤，含 Top100、异动、metadata、下载/收益、Top5、**US 免费榜商店页 metadata 变更检测** `fetch_us_free_metadata_and_compare.js`、下架检测等；详见 [WEEKLY_WORKFLOW.md](WEEKLY_WORKFLOW.md) 与 `workflow_week_rank_changes.js` 文件头注释）
+3. **步骤 2/2**：成功后再执行 `send_sensortower_weekly_push.py --date <本周一>`（飞书/企微 Markdown 周报；飞书端会对 Markdown 内商店图标做行内缩小展示）
+4. 写入按日详细日志
 
 **日期约定**：详见 [WEEKLY_WORKFLOW.md](WEEKLY_WORKFLOW.md) 中「日期约定（周一→周日）」一节。
 
-**执行内容**：
+**执行内容（顶层）**：
 
 ```
-步骤 1: 完整周报工作流
-  ├─ 获取 Top100 榜单
-  ├─ 生成榜单异动
-  ├─ 获取应用元数据
-  ├─ 获取下载/收益数据
-  └─ 补全开发者信息
-
-步骤 2: 商店信息爬取和变更检测
-  ├─ 爬取 Google Play 商店信息
-  ├─ 爬取 App Store 商店信息
-  ├─ 检测变更并记录
-  └─ 更新商店信息表
+步骤 1/2: workflow_week_rank_changes.js（Top100 周报数据与 US 免费榜商店页变更等）
+步骤 2/2: send_sensortower_weekly_push.py（推送）
 ```
 
 ---
@@ -99,11 +90,11 @@ ls -lt logs/weekly_workflow_*.log | head -5
 [2026-02-10T10:30:00.200Z] 开始执行: 完整周报工作流
 ...
 [2026-02-10T10:45:30.500Z] ✓ 完整周报工作流 执行成功
-[2026-02-10T10:45:30.600Z] 开始执行: 商店信息爬取和变更检测
+[2026-02-10T10:45:30.600Z] 步骤 2/2: SensorTower 周报推送（飞书/企微）
 ...
 [2026-02-10T11:00:15.800Z] 每周自动工作流执行完成
 [2026-02-10T11:00:15.900Z] 执行时间: 30.25 分钟
-[2026-02-10T11:00:16.000Z] 成功: 2/2
+[2026-02-10T11:00:16.000Z] 步骤 — 完整周报: OK；周报推送: OK
 ```
 
 ---

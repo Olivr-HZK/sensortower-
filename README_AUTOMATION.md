@@ -12,10 +12,10 @@ npm run setup-cron
 
 ## 📋 设置后的效果
 
-- ✅ 每周一早上 10:30 自动执行
-- ✅ 完整周报工作流（Top100 + 异动 + 元数据 + 销售数据）
-- ✅ 商店信息爬取和变更检测
-- ✅ 自动记录详细日志
+- ✅ 每周一 **10:30**：`weekly_automated_workflow.js`（Top100 周报 + 推送）
+- ✅ 每天 **10:00**：我方产品 US 免费榜日报（`--daily --no-competitors`）
+- ✅ 第三条「每日本品 + 竞品」：**不会**由本脚本安装，需另执行 `npm run setup-arrow-madness-daily-cron` 或 `bash scripts/setup_arrow_madness_daily_cron.sh`
+- ✅ 详细说明见 [docs/THREE_WORKFLOWS.md](docs/THREE_WORKFLOWS.md)
 
 ## 🔍 查看日志
 
@@ -39,4 +39,5 @@ node scripts/weekly_automated_workflow.js
 
 ## 📚 详细文档
 
-查看 [AUTOMATED_WORKFLOW.md](docs/AUTOMATED_WORKFLOW.md) 获取完整说明。
+- [三条工作流说明](docs/THREE_WORKFLOWS.md)（周 Top100 / 日我方 / 日竞品）
+- [自动化与定时任务](docs/AUTOMATED_WORKFLOW.md)
